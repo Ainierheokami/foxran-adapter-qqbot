@@ -1,0 +1,17 @@
+# QQ 机器人开放平台（https://bot.q.qq.com/）
+enabled: false
+app_id: ""
+app_secret: ""
+
+# websocket、webhook 或 both。Webhook 需要在开放平台配置 HTTPS 回调地址。
+transport: "websocket"
+webhook_path: "/qqbot/webhook"
+api_base_url: "https://api.bot.qq.com"
+token_url: "https://bots.qq.com/app/getAppAccessToken"
+
+# 默认订阅：群 @、单聊、频道 @。仅订阅已获授权的 Intents。
+intents: 1107296256
+shards: 1
+use_group_as_session: true
+reconnect_initial_delay: 2.0
+reconnect_max_delay: 30.0

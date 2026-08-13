@@ -1,0 +1,20 @@
+manifest_version: 1
+
+extension:
+  id: "qqbot"
+  name: "QQ Bot OpenAPI"
+  version: "1.0.0"
+  type: "adapter"
+  description: "QQ 机器人 OpenAPI v2（WebSocket 与 Webhook）适配器"
+  author: "Foxran"
+  repository: "https://github.com/Ainierheokami/foxran-adapter-qqbot"
+  tags: ["qq", "qqbot", "openapi"]
+
+compatibility:
+  foxran: ">=1.0.0"
+  python: ">=3.10"
+
+adapter:
+  entry: "__init__.py"
+  config_template: "template.yml"
+  platforms: ["qqbot", "qq_openapi"]
