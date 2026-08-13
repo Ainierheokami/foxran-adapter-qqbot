@@ -14,7 +14,14 @@ from app.tasks.core.session_processor import SessionProcessor
 from starlette.websockets import WebSocketState
 
 logger = setup_logger(__name__)
-MESSAGE_EVENTS = {"C2C_MESSAGE_CREATE", "GROUP_AT_MESSAGE_CREATE", "AT_MESSAGE_CREATE", "MESSAGE_CREATE", "DIRECT_MESSAGE_CREATE"}
+MESSAGE_EVENTS = {
+    "C2C_MESSAGE_CREATE",
+    "GROUP_AT_MESSAGE_CREATE",
+    "GROUP_MESSAGE_CREATE",
+    "AT_MESSAGE_CREATE",
+    "MESSAGE_CREATE",
+    "DIRECT_MESSAGE_CREATE",
+}
 _seen_ids: deque[str] = deque(maxlen=4096)
 _seen_set: set[str] = set()
 
@@ -33,7 +40,7 @@ def _remember(event_id: Any) -> bool:
 
 
 def target_for_event(event_type: str, data: dict[str, Any]) -> tuple[dict[str, str], str, str, str]:
-    if event_type == "GROUP_AT_MESSAGE_CREATE":
+    if event_type in {"GROUP_AT_MESSAGE_CREATE", "GROUP_MESSAGE_CREATE"}:
         target = {"kind": "group", "id": str(data["group_openid"])}
         return target, "group", str(data.get("author", {}).get("member_openid") or "unknown"), target["id"]
     if event_type == "C2C_MESSAGE_CREATE":
