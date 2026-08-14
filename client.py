@@ -17,7 +17,8 @@ class QQBotAPIError(RuntimeError):
 
 
 class QQBotClient:
-    def __init__(self) -> None:
+    def __init__(self, account_id: str = "default") -> None:
+        self.account_id = account_id
         self._token = ""
         self._expires_at = 0.0
         self._token_lock = asyncio.Lock()
@@ -28,7 +29,7 @@ class QQBotClient:
         async with self._token_lock:
             if self._token and time.time() < self._expires_at - 60:
                 return self._token
-            cfg = qqbot_config.get()
+            cfg = self.config()
             app_id, secret = str(cfg.get("app_id") or ""), str(cfg.get("app_secret") or "")
             if not app_id or not secret:
                 raise QQBotAPIError("qqbot.yml 缺少 app_id 或 app_secret")
@@ -49,7 +50,7 @@ class QQBotClient:
 
     async def bot_openid(self) -> str:
         """Return the current bot's OpenID for full-group mention matching."""
-        configured = str(qqbot_config.get().get("bot_openid") or "").strip()
+        configured = str(self.config().get("bot_openid") or "").strip()
         if configured:
             return configured
         if self._bot_openid:
@@ -71,10 +72,16 @@ class QQBotClient:
             return value
 
     async def request(self, method: str, path: str, payload: dict[str, Any] | None = None) -> dict[str, Any]:
-        cfg = qqbot_config.get()
+        cfg = self.config()
         token = await self.access_token()
         url = str(cfg["api_base_url"]).rstrip("/") + path
         return await self._request_json(url, payload, method=method, headers={"Authorization": f"QQBot {token}"})
+
+    def config(self, force_reload: bool = False) -> dict[str, Any]:
+        cfg = qqbot_config.get_account(self.account_id, force_reload=force_reload)
+        if not cfg:
+            raise QQBotAPIError(f"QQ Bot 账户不存在: {self.account_id}")
+        return cfg
 
     async def send_message(self, target: dict[str, str], content: str, msg_id: str) -> str | None:
         kind, target_id = target["kind"], target["id"]
@@ -96,4 +103,23 @@ class QQBotClient:
         return await asyncio.to_thread(execute)
 
 
-qqbot_client = QQBotClient()
+class QQBotClientManager:
+    def __init__(self) -> None:
+        self._clients: dict[str, QQBotClient] = {}
+
+    def get(self, account_id: str = "default") -> QQBotClient:
+        account_id = str(account_id or "default")
+        return self._clients.setdefault(account_id, QQBotClient(account_id))
+
+    def prune(self, account_ids: set[str]) -> None:
+        for account_id in list(self._clients):
+            if account_id not in account_ids:
+                self._clients.pop(account_id, None)
+
+    def clear(self) -> None:
+        self._clients.clear()
+
+
+qqbot_clients = QQBotClientManager()
+# Backwards-compatible default client for external integrations.
+qqbot_client = qqbot_clients.get("default")

@@ -7,7 +7,7 @@ from typing import Any
 import app.api.core as api_core
 from app.adapters.control.policy import platform_policy
 from app.adapters.message_protocol import bind_platform_id, make_user_message
-from app.adapters.qqbot.client import QQBotAPIError, qqbot_client
+from app.adapters.qqbot.client import QQBotAPIError, QQBotClient, qqbot_client, qqbot_clients
 from app.adapters.qqbot.config import qqbot_config
 from app.api.core import active_processors, get_or_create_session_context
 from app.logger import setup_logger
@@ -28,8 +28,8 @@ _seen_set: set[str] = set()
 MENTION_PATTERN = re.compile(r"<@!?([^>\s]+)>")
 
 
-def _remember(event_id: Any) -> bool:
-    value = str(event_id or "")
+def _remember(event_id: Any, account_id: str = "default") -> bool:
+    value = f"{account_id}:{event_id}" if event_id else ""
     if not value:
         return True
     if value in _seen_set:
@@ -68,7 +68,11 @@ def mention_openids(data: dict[str, Any]) -> set[str]:
     return values
 
 
-async def event_is_mention(event_type: str, data: dict[str, Any]) -> bool:
+async def event_is_mention(
+    event_type: str,
+    data: dict[str, Any],
+    client: QQBotClient | None = None,
+) -> bool:
     """Return whether an event explicitly mentions this bot, including full-group events."""
     if event_type in {"GROUP_AT_MESSAGE_CREATE", "AT_MESSAGE_CREATE"}:
         return True
@@ -78,15 +82,16 @@ async def event_is_mention(event_type: str, data: dict[str, Any]) -> bool:
     if not mentioned:
         return False
     try:
-        return await qqbot_client.bot_openid() in mentioned
+        return await (client or qqbot_client).bot_openid() in mentioned
     except QQBotAPIError as exc:
         logger.warning("QQ Bot 无法识别全量群消息中的艾特: %s", exc)
         return False
 
 
 class QQBotReplySender:
-    def __init__(self, session_ctx: Any) -> None:
+    def __init__(self, session_ctx: Any, client: QQBotClient) -> None:
         self.session_ctx = session_ctx
+        self.client = client
 
     @property
     def client_state(self) -> WebSocketState:
@@ -106,7 +111,7 @@ class QQBotReplySender:
             return
         try:
             logger.info("QQ Bot 正在发送回复：target=%s msg_id=%s content=%s", target.get("id"), msg_id, reply[:200])
-            platform_id = await qqbot_client.send_message(target, reply, str(msg_id))
+            platform_id = await self.client.send_message(target, reply, str(msg_id))
             logger.info("QQ Bot 回复发送成功：target=%s platform_message_id=%s", target.get("id"), platform_id)
             message_id = data.get("message_id") or data.get("id")
             if platform_id and message_id:
@@ -115,14 +120,22 @@ class QQBotReplySender:
             logger.error("QQ Bot 回复失败: %s", exc)
 
 
-async def handle_event(event_type: str, data: dict[str, Any], event_id: Any = None) -> None:
+async def handle_event(
+    event_type: str,
+    data: dict[str, Any],
+    event_id: Any = None,
+    *,
+    account_id: str = "default",
+    client: QQBotClient | None = None,
+) -> None:
+    client = client or qqbot_clients.get(account_id)
     if event_type not in MESSAGE_EVENTS:
         logger.debug("QQ Bot 忽略非消息事件：type=%s", event_type)
         return
     if not isinstance(data, dict):
         logger.warning("QQ Bot 忽略格式错误的消息事件：type=%s", event_type)
         return
-    if not _remember(event_id or data.get("id")):
+    if not _remember(event_id or data.get("id"), account_id):
         logger.debug("QQ Bot 忽略重复事件：type=%s id=%s", event_type, event_id or data.get("id"))
         return
     try:
@@ -130,30 +143,34 @@ async def handle_event(event_type: str, data: dict[str, Any], event_id: Any = No
     except KeyError:
         logger.warning("QQ Bot 事件缺少目标字段: %s", event_type)
         return
-    is_mention = await event_is_mention(event_type, data)
+    is_mention = await event_is_mention(event_type, data, client)
+    cfg = client.config()
+    bot_id = str(cfg.get("bot_openid") or cfg.get("app_id") or account_id)
     decision = platform_policy.evaluate(
         "qqbot",
         message_type,
         user_id,
         conversation_id if message_type == "group" else None,
         is_mention,
+        bot_id=bot_id,
     )
     logger.info(
-        "QQ Bot 收到消息：type=%s target=%s user=%s mention=%s reply=%s reason=%s content=%s",
-        event_type, target["id"], user_id, is_mention, decision.should_reply,
+        "QQ Bot 收到消息：account=%s type=%s target=%s user=%s mention=%s reply=%s reason=%s content=%s",
+        account_id, event_type, target["id"], user_id, is_mention, decision.should_reply,
         decision.reason, str(data.get("content") or "")[:200],
     )
     if not decision.should_reply:
         logger.info("QQ Bot 消息仅记录/忽略：策略未触发回复")
         return
-    cfg = qqbot_config.get()
-    session_id = f"qqbot:{target['kind']}:{conversation_id if cfg.get('use_group_as_session', True) else user_id}"
+    account_part = "" if account_id == "default" else f"{account_id}:"
+    session_id = f"qqbot:{account_part}{target['kind']}:{conversation_id if cfg.get('use_group_as_session', True) else user_id}"
     user = data.get("author") or {}
     try:
         session_ctx = await get_or_create_session_context(session_id, user_id, str(user.get("username") or user.get("user_openid") or user_id), "qqbot")
         session_ctx.session_notes["qqbot_target"] = target
         session_ctx.session_notes["qqbot_msg_id"] = str(data.get("id") or event_id)
-        session_ctx.set_websocket(QQBotReplySender(session_ctx))
+        session_ctx.session_notes["qqbot_account_id"] = account_id
+        session_ctx.set_websocket(QQBotReplySender(session_ctx, client))
         logger.info("QQ Bot 将消息交给会话处理：session=%s", session_id)
         from app.data_mappers import get_message_processor
         processor = get_message_processor()

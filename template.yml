@@ -1,20 +1,34 @@
 # QQ 机器人开放平台（https://bot.q.qq.com/）
+# 顶层字段是兼容旧版的 default 账户；也可以改用下方 accounts 多账户列表。
 enabled: false
 app_id: ""
 app_secret: ""
-# 全量群消息（GROUP_MESSAGE_CREATE）中用于识别正文 <@OpenID> 的机器人 OpenID。
-# 推荐显式填写：/users/@me 的机器人 ID 在部分场景不等同于群消息中的 OpenID。
+# GROUP_MESSAGE_CREATE 中用于匹配正文 <@OpenID> 的机器人 OpenID。
 bot_openid: ""
-
-# websocket、webhook 或 both。Webhook 需要在开放平台配置 HTTPS 回调地址。
-transport: "websocket"
+transport: "websocket" # websocket、webhook 或 both
 webhook_path: "/qqbot/webhook"
 api_base_url: "https://api.bot.qq.com"
 token_url: "https://bots.qq.com/app/getAppAccessToken"
-
-# 默认订阅：群 @、单聊、频道 @。仅订阅已获授权的 Intents。
+# GROUP_AND_C2C_EVENT (1<<25) + PUBLIC_GUILD_MESSAGES (1<<30)
 intents: 1107296256
 shards: 1
 use_group_as_session: true
 reconnect_initial_delay: 2.0
 reconnect_max_delay: 30.0
+
+# 配置 accounts 后优先使用列表；每个账户拥有独立连接、凭据和会话。
+# accounts:
+#   - id: "main"
+#     name: "主 QQBot"
+#     enabled: true
+#     app_id: ""
+#     app_secret: ""
+#     bot_openid: ""
+#     transport: "websocket"
+#     api_base_url: "https://api.bot.qq.com"
+#     token_url: "https://bots.qq.com/app/getAppAccessToken"
+#     intents: 1107296256
+#     shards: 1
+#     use_group_as_session: true
+#     reconnect_initial_delay: 2.0
+#     reconnect_max_delay: 30.0
