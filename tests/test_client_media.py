@@ -55,8 +55,84 @@ class RecordingClient(client_module.QQBotClient):
             return {"file_info": f"uploaded-{payload['file_type']}"}
         return {"id": f"message-{len(self.calls)}"}
 
+    def config(self, force_reload=False):
+        return {"markdown_enabled": True}
+
+
+class RejectMarkdownClient(RecordingClient):
+    async def request(self, method, path, payload=None):
+        self.calls.append((method, path, payload))
+        if payload and payload.get("msg_type") == 2:
+            raise client_module.QQBotAPIError(
+                "QQ Bot HTTP POST failed: HTTP 400 Bad Request"
+            )
+        return {"id": f"message-{len(self.calls)}"}
+
 
 class QQBotMediaSendingTests(unittest.IsolatedAsyncioTestCase):
+    async def test_markdown_reply_uses_msg_type_two(self):
+        client = RecordingClient()
+
+        await client.send_message(
+            {"kind": "group", "id": "group-1"},
+            "## 结果\n\n- 第一项\n- 第二项",
+            "source-message",
+        )
+
+        self.assertEqual(client.calls[0][2], {
+            "msg_type": 2,
+            "markdown": {"content": "## 结果\n\n- 第一项\n- 第二项"},
+            "msg_id": "source-message",
+            "msg_seq": 1,
+        })
+
+    async def test_plain_sentence_remains_text(self):
+        client = RecordingClient()
+
+        await client.send_message(
+            {"kind": "group", "id": "group-1"}, "普通回复", "source-message"
+        )
+
+        self.assertEqual(client.calls[0][2]["msg_type"], 0)
+
+    async def test_rejected_markdown_falls_back_to_text_with_same_sequence(self):
+        client = RejectMarkdownClient()
+
+        result = await client.send_message(
+            {"kind": "group", "id": "group-1"}, "**重点**", "source-message"
+        )
+
+        self.assertEqual(result, "message-2")
+        self.assertEqual([call[2]["msg_type"] for call in client.calls], [2, 0])
+        self.assertEqual([call[2]["msg_seq"] for call in client.calls], [1, 1])
+
+    async def test_channel_markdown_uses_markdown_payload(self):
+        client = RecordingClient()
+
+        await client.send_message(
+            {"kind": "channel", "id": "channel-1"}, "# 标题", "source-message"
+        )
+
+        self.assertEqual(client.calls[0][2], {
+            "markdown": {"content": "# 标题"},
+            "msg_id": "source-message",
+        })
+
+    async def test_markdown_text_keeps_sequence_before_media(self):
+        client = RecordingClient()
+
+        await client.send_message(
+            {"kind": "group", "id": "group-1"},
+            "**视频已生成**\n[video,url=https://example.com/a.mp4]",
+            "source-message",
+        )
+
+        message_calls = [call for call in client.calls if call[1].endswith("/messages")]
+        self.assertEqual(message_calls[0][2]["msg_type"], 2)
+        self.assertEqual(message_calls[0][2]["msg_seq"], 1)
+        self.assertEqual(message_calls[1][2]["msg_type"], 7)
+        self.assertEqual(message_calls[1][2]["msg_seq"], 2)
+
     async def test_group_video_is_uploaded_then_sent_as_rich_media(self):
         client = RecordingClient()
 

@@ -10,4 +10,6 @@ The adapter supports `C2C_MESSAGE_CREATE`, `GROUP_AT_MESSAGE_CREATE`, `GROUP_MES
 
 For group and C2C replies, `[image,url=…]`, `[video,url=…]`, and `[voice,url=…]` are uploaded through QQ's rich-media endpoint and then sent as `msg_type: 7`. Multiple reply parts use increasing `msg_seq` values. QQ currently does not expose general file (`file_type: 4`) delivery, so `[file,url=…]` is sent as a clickable URL instead. Remote media must satisfy QQ's format and accessibility requirements: PNG/JPG images, MP4 videos, and SILK voice files reachable from QQ's servers.
 
+Markdown replies are enabled by default with `markdown_enabled: true`. The adapter detects common Markdown constructs and sends them using QQ's `msg_type: 2` payload while leaving ordinary sentences as text. A definite QQ validation or business rejection falls back to plain text; transport and server errors are not retried to avoid duplicate replies.
+
 Do not put AppSecret in source control. Grant the selected intents in the QQ console; requesting an unauthorized intent causes the gateway to close with 4014.

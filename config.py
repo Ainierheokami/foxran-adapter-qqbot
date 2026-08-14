@@ -16,7 +16,8 @@ DEFAULTS: dict[str, Any] = {
     "bot_openid": "",
     "webhook_path": "/qqbot/webhook", "api_base_url": "https://api.bot.qq.com",
     "token_url": "https://bots.qq.com/app/getAppAccessToken", "intents": (1 << 25) | (1 << 30),
-    "shards": 1, "use_group_as_session": True, "reconnect_initial_delay": 2.0,
+    "shards": 1, "use_group_as_session": True, "markdown_enabled": True,
+    "reconnect_initial_delay": 2.0,
     "reconnect_max_delay": 30.0,
 }
 
@@ -24,7 +25,10 @@ DEFAULTS: dict[str, Any] = {
 def _normalize_accounts(value: dict[str, Any]) -> list[dict[str, Any]]:
     raw_accounts = value.get("accounts")
     if not isinstance(raw_accounts, list) or not raw_accounts:
-        legacy = {key: item for key, item in value.items() if key != "accounts"}
+        legacy = {
+            **DEFAULTS,
+            **{key: item for key, item in value.items() if key != "accounts"},
+        }
         legacy["id"] = str(legacy.get("id") or "default")
         legacy["name"] = str(legacy.get("name") or "默认 QQBot")
         return [legacy]

@@ -23,6 +23,10 @@ _MEDIA_TAG = re.compile(
     re.IGNORECASE,
 )
 _MEDIA_FILE_TYPES = {"image": 1, "video": 2, "voice": 3}
+_MARKDOWN_MARKERS = re.compile(
+    r"(?m)(?:^\s{0,3}(?:#{1,6}\s+|[-*+]\s+|\d+[.)]\s+|>\s+|```)|"
+    r"\*\*[^*\n]+\*\*|__[^_\n]+__|`[^`\n]+`|\[[^\]\n]+\]\([^\s)]+\))"
+)
 
 
 def _outgoing_parts(content: str) -> tuple[str, list[tuple[str, str]]]:
@@ -40,6 +44,10 @@ def _outgoing_parts(content: str) -> tuple[str, list[tuple[str, str]]]:
     text = re.sub(r"[ \t]+\n", "\n", text)
     text = re.sub(r"\n{3,}", "\n\n", text).strip()
     return text, media
+
+
+def _looks_like_markdown(content: str) -> bool:
+    return bool(_MARKDOWN_MARKERS.search(content))
 
 
 class QQBotClient:
@@ -122,14 +130,14 @@ class QQBotClient:
         if kind == "channel":
             # Guild channels use the legacy message API rather than v2 rich media.
             channel_content = _MEDIA_TAG.sub(lambda match: match.group("url"), content).strip()
-            return self._message_id(await self.request(
-                "POST", message_paths[kind], {"content": channel_content, "msg_id": msg_id}
+            return self._message_id(await self._send_channel_text(
+                message_paths[kind], channel_content, msg_id
             ))
 
         text, media_items = _outgoing_parts(content)
         if not media_items:
-            return self._message_id(await self._send_v2_payload(
-                message_paths[kind], {"content": text, "msg_type": 0, "msg_id": msg_id, "msg_seq": 1}
+            return self._message_id(await self._send_v2_text(
+                message_paths[kind], text, msg_id, 1
             ))
 
         file_path = (
@@ -140,9 +148,8 @@ class QQBotClient:
         sequence = 1
         platform_id: str | None = None
         if text:
-            platform_id = self._message_id(await self._send_v2_payload(
-                message_paths[kind],
-                {"content": text, "msg_type": 0, "msg_id": msg_id, "msg_seq": sequence},
+            platform_id = self._message_id(await self._send_v2_text(
+                message_paths[kind], text, msg_id, sequence
             ))
             sequence += 1
 
@@ -167,6 +174,52 @@ class QQBotClient:
             ))
             sequence += 1
         return platform_id
+
+    def _markdown_enabled(self) -> bool:
+        return bool(self.config().get("markdown_enabled", True))
+
+    async def _send_channel_text(self, path: str, text: str, msg_id: str) -> dict[str, Any]:
+        if self._markdown_enabled() and _looks_like_markdown(text):
+            try:
+                return await self.request("POST", path, {
+                    "markdown": {"content": text}, "msg_id": msg_id,
+                })
+            except QQBotAPIError as exc:
+                if not self._can_fallback_markdown(exc):
+                    raise
+                logger.warning("QQ Bot Markdown 被拒绝，降级为纯文本：%s", exc)
+        return await self.request("POST", path, {"content": text, "msg_id": msg_id})
+
+    async def _send_v2_text(
+        self,
+        path: str,
+        text: str,
+        msg_id: str,
+        msg_seq: int,
+    ) -> dict[str, Any]:
+        if self._markdown_enabled() and _looks_like_markdown(text):
+            try:
+                return await self._send_v2_payload(path, {
+                    "msg_type": 2,
+                    "markdown": {"content": text},
+                    "msg_id": msg_id,
+                    "msg_seq": msg_seq,
+                })
+            except QQBotAPIError as exc:
+                if not self._can_fallback_markdown(exc):
+                    raise
+                logger.warning("QQ Bot Markdown 被拒绝，降级为纯文本：%s", exc)
+        return await self._send_v2_payload(path, {
+            "content": text,
+            "msg_type": 0,
+            "msg_id": msg_id,
+            "msg_seq": msg_seq,
+        })
+
+    @staticmethod
+    def _can_fallback_markdown(exc: QQBotAPIError) -> bool:
+        detail = str(exc)
+        return "HTTP 400" in detail or detail.startswith("发送失败 ")
 
     async def _send_v2_payload(self, path: str, payload: dict[str, Any]) -> dict[str, Any]:
         result = await self.request("POST", path, payload)

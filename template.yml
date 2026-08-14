@@ -13,6 +13,7 @@ token_url: "https://bots.qq.com/app/getAppAccessToken"
 intents: 1107296256
 shards: 1
 use_group_as_session: true
+markdown_enabled: true # 自动识别 Markdown 并用 msg_type 2 发送；被 QQ 拒绝时降级为文本
 reconnect_initial_delay: 2.0
 reconnect_max_delay: 30.0
 
@@ -30,5 +31,6 @@ reconnect_max_delay: 30.0
 #     intents: 1107296256
 #     shards: 1
 #     use_group_as_session: true
+#     markdown_enabled: true
 #     reconnect_initial_delay: 2.0
 #     reconnect_max_delay: 30.0
