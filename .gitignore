@@ -1,0 +1,25 @@
+# Python bytecode and test/tool caches
+__pycache__/
+*.py[codz]
+*$py.class
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.tox/
+.nox/
+.coverage
+.coverage.*
+htmlcov/
+coverage.xml
+.venv/
+venv/
+build/
+dist/
+*.egg-info/
+
+# Local runtime artifacts
+*.log
+tmp/
+output/
+.DS_Store
+Thumbs.db
