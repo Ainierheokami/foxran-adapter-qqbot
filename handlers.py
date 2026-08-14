@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections import deque
+import re
 from typing import Any
 
 import app.api.core as api_core
@@ -24,6 +25,7 @@ MESSAGE_EVENTS = {
 }
 _seen_ids: deque[str] = deque(maxlen=4096)
 _seen_set: set[str] = set()
+MENTION_PATTERN = re.compile(r"<@!?([^>\s]+)>")
 
 
 def _remember(event_id: Any) -> bool:
@@ -53,9 +55,33 @@ def target_for_event(event_type: str, data: dict[str, Any]) -> tuple[dict[str, s
     return target, "private", str(data.get("author", {}).get("id") or "unknown"), target["id"]
 
 
-def event_is_mention(event_type: str) -> bool:
-    """Return whether a QQ Bot gateway event explicitly mentions the bot."""
-    return event_type in {"GROUP_AT_MESSAGE_CREATE", "AT_MESSAGE_CREATE"}
+def mention_openids(data: dict[str, Any]) -> set[str]:
+    """Extract mentioned OpenIDs from a full QQ group message payload."""
+    values = {match.group(1) for match in MENTION_PATTERN.finditer(str(data.get("content") or ""))}
+    mentions = data.get("mentions")
+    if isinstance(mentions, list):
+        for mention in mentions:
+            if isinstance(mention, dict):
+                value = mention.get("user_openid") or mention.get("openid") or mention.get("id")
+                if value:
+                    values.add(str(value))
+    return values
+
+
+async def event_is_mention(event_type: str, data: dict[str, Any]) -> bool:
+    """Return whether an event explicitly mentions this bot, including full-group events."""
+    if event_type in {"GROUP_AT_MESSAGE_CREATE", "AT_MESSAGE_CREATE"}:
+        return True
+    if event_type != "GROUP_MESSAGE_CREATE":
+        return False
+    mentioned = mention_openids(data)
+    if not mentioned:
+        return False
+    try:
+        return await qqbot_client.bot_openid() in mentioned
+    except QQBotAPIError as exc:
+        logger.warning("QQ Bot 无法识别全量群消息中的艾特: %s", exc)
+        return False
 
 
 class QQBotReplySender:
@@ -104,16 +130,17 @@ async def handle_event(event_type: str, data: dict[str, Any], event_id: Any = No
     except KeyError:
         logger.warning("QQ Bot 事件缺少目标字段: %s", event_type)
         return
+    is_mention = await event_is_mention(event_type, data)
     decision = platform_policy.evaluate(
         "qqbot",
         message_type,
         user_id,
         conversation_id if message_type == "group" else None,
-        event_is_mention(event_type),
+        is_mention,
     )
     logger.info(
         "QQ Bot 收到消息：type=%s target=%s user=%s mention=%s reply=%s reason=%s content=%s",
-        event_type, target["id"], user_id, event_is_mention(event_type), decision.should_reply,
+        event_type, target["id"], user_id, is_mention, decision.should_reply,
         decision.reason, str(data.get("content") or "")[:200],
     )
     if not decision.should_reply:

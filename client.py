@@ -21,6 +21,8 @@ class QQBotClient:
         self._token = ""
         self._expires_at = 0.0
         self._token_lock = asyncio.Lock()
+        self._bot_openid = ""
+        self._bot_openid_lock = asyncio.Lock()
 
     async def access_token(self) -> str:
         async with self._token_lock:
@@ -44,6 +46,29 @@ class QQBotClient:
         if not url:
             raise QQBotAPIError(f"网关地址缺失: {result}")
         return str(url)
+
+    async def bot_openid(self) -> str:
+        """Return the current bot's OpenID for full-group mention matching."""
+        configured = str(qqbot_config.get().get("bot_openid") or "").strip()
+        if configured:
+            return configured
+        if self._bot_openid:
+            return self._bot_openid
+        async with self._bot_openid_lock:
+            if self._bot_openid:
+                return self._bot_openid
+            profile = await self.request("GET", "/users/@me")
+            value = str(
+                profile.get("user_openid")
+                or profile.get("openid")
+                or profile.get("id")
+                or ""
+            ).strip()
+            if not value:
+                raise QQBotAPIError(f"无法从当前机器人资料获取 OpenID: {profile}")
+            self._bot_openid = value
+            logger.info("QQ Bot 已获取机器人 OpenID，用于全量群消息艾特识别")
+            return value
 
     async def request(self, method: str, path: str, payload: dict[str, Any] | None = None) -> dict[str, Any]:
         cfg = qqbot_config.get()

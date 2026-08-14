@@ -2,6 +2,9 @@
 enabled: false
 app_id: ""
 app_secret: ""
+# 可选：机器人自身的 OpenID。留空时适配器会通过 /users/@me 自动获取，
+# 仅在全量群消息（GROUP_MESSAGE_CREATE）中识别正文的 <@OpenID> 时使用。
+bot_openid: ""
 
 # websocket、webhook 或 both。Webhook 需要在开放平台配置 HTTPS 回调地址。
 transport: "websocket"

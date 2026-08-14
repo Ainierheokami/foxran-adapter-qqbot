@@ -10,6 +10,7 @@ CONFIG_PATH = Path("config/qqbot.yml")
 TEMPLATE_PATH = Path(__file__).parent / "template.yml"
 DEFAULTS: dict[str, Any] = {
     "enabled": False, "app_id": "", "app_secret": "", "transport": "websocket",
+    "bot_openid": "",
     "webhook_path": "/qqbot/webhook", "api_base_url": "https://api.bot.qq.com",
     "token_url": "https://bots.qq.com/app/getAppAccessToken", "intents": (1 << 25) | (1 << 30),
     "shards": 1, "use_group_as_session": True, "reconnect_initial_delay": 2.0,
