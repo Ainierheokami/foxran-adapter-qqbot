@@ -53,6 +53,11 @@ def target_for_event(event_type: str, data: dict[str, Any]) -> tuple[dict[str, s
     return target, "private", str(data.get("author", {}).get("id") or "unknown"), target["id"]
 
 
+def event_is_mention(event_type: str) -> bool:
+    """Return whether a QQ Bot gateway event explicitly mentions the bot."""
+    return event_type in {"GROUP_AT_MESSAGE_CREATE", "AT_MESSAGE_CREATE"}
+
+
 class QQBotReplySender:
     def __init__(self, session_ctx: Any) -> None:
         self.session_ctx = session_ctx
@@ -74,7 +79,9 @@ class QQBotReplySender:
             logger.warning("QQ Bot 回复丢弃：缺少 target 或 msg_id")
             return
         try:
+            logger.info("QQ Bot 正在发送回复：target=%s msg_id=%s content=%s", target.get("id"), msg_id, reply[:200])
             platform_id = await qqbot_client.send_message(target, reply, str(msg_id))
+            logger.info("QQ Bot 回复发送成功：target=%s platform_message_id=%s", target.get("id"), platform_id)
             message_id = data.get("message_id") or data.get("id")
             if platform_id and message_id:
                 self.session_ctx.set_platform_id_for_message(str(message_id), platform_id)
@@ -83,15 +90,34 @@ class QQBotReplySender:
 
 
 async def handle_event(event_type: str, data: dict[str, Any], event_id: Any = None) -> None:
-    if event_type not in MESSAGE_EVENTS or not isinstance(data, dict) or not _remember(event_id or data.get("id")):
+    if event_type not in MESSAGE_EVENTS:
+        logger.debug("QQ Bot 忽略非消息事件：type=%s", event_type)
+        return
+    if not isinstance(data, dict):
+        logger.warning("QQ Bot 忽略格式错误的消息事件：type=%s", event_type)
+        return
+    if not _remember(event_id or data.get("id")):
+        logger.debug("QQ Bot 忽略重复事件：type=%s id=%s", event_type, event_id or data.get("id"))
         return
     try:
         target, message_type, user_id, conversation_id = target_for_event(event_type, data)
     except KeyError:
         logger.warning("QQ Bot 事件缺少目标字段: %s", event_type)
         return
-    decision = platform_policy.evaluate("qqbot", message_type, user_id, conversation_id if message_type == "group" else None, True)
+    decision = platform_policy.evaluate(
+        "qqbot",
+        message_type,
+        user_id,
+        conversation_id if message_type == "group" else None,
+        event_is_mention(event_type),
+    )
+    logger.info(
+        "QQ Bot 收到消息：type=%s target=%s user=%s mention=%s reply=%s reason=%s content=%s",
+        event_type, target["id"], user_id, event_is_mention(event_type), decision.should_reply,
+        decision.reason, str(data.get("content") or "")[:200],
+    )
     if not decision.should_reply:
+        logger.info("QQ Bot 消息仅记录/忽略：策略未触发回复")
         return
     cfg = qqbot_config.get()
     session_id = f"qqbot:{target['kind']}:{conversation_id if cfg.get('use_group_as_session', True) else user_id}"
@@ -101,6 +127,7 @@ async def handle_event(event_type: str, data: dict[str, Any], event_id: Any = No
         session_ctx.session_notes["qqbot_target"] = target
         session_ctx.session_notes["qqbot_msg_id"] = str(data.get("id") or event_id)
         session_ctx.set_websocket(QQBotReplySender(session_ctx))
+        logger.info("QQ Bot 将消息交给会话处理：session=%s", session_id)
         from app.data_mappers import get_message_processor
         processor = get_message_processor()
         raw_content = data.get("content") or ""
