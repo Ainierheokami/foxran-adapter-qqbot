@@ -37,4 +37,4 @@ class QQBotAdapter(BasePlatformAdapter):
         return str(internal_data or "")
 
     def get_platform_prompts(self, session_ctx: Any) -> str:
-        return "当前通过 QQ 机器人开放平台回复。群聊消息必须回复触发消息；图片链接会作为文本链接发送。"
+        return "当前通过 QQ 机器人开放平台回复。群聊消息必须回复触发消息；支持通过 URL 发送图片、MP4 视频和 SILK 语音，普通文件会降级为链接。"

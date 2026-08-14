@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 import time
 from typing import Any
+from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 
 from app.logger import setup_logger
@@ -14,6 +16,30 @@ logger = setup_logger(__name__)
 
 class QQBotAPIError(RuntimeError):
     pass
+
+
+_MEDIA_TAG = re.compile(
+    r"\[(?P<kind>image|video|voice|file)\s*,\s*url=(?P<url>[^,\]\s]+)(?:\s*,[^\]]*)?\]",
+    re.IGNORECASE,
+)
+_MEDIA_FILE_TYPES = {"image": 1, "video": 2, "voice": 3}
+
+
+def _outgoing_parts(content: str) -> tuple[str, list[tuple[str, str]]]:
+    """Split Foxran media tags from text; unsupported files degrade to links."""
+    media: list[tuple[str, str]] = []
+
+    def replace(match: re.Match[str]) -> str:
+        kind, url = match.group("kind").lower(), match.group("url")
+        if kind in _MEDIA_FILE_TYPES:
+            media.append((kind, url))
+            return ""
+        return url
+
+    text = _MEDIA_TAG.sub(replace, content)
+    text = re.sub(r"[ \t]+\n", "\n", text)
+    text = re.sub(r"\n{3,}", "\n\n", text).strip()
+    return text, media
 
 
 class QQBotClient:
@@ -85,10 +111,71 @@ class QQBotClient:
 
     async def send_message(self, target: dict[str, str], content: str, msg_id: str) -> str | None:
         kind, target_id = target["kind"], target["id"]
-        paths = {"group": f"/v2/groups/{target_id}/messages", "c2c": f"/v2/users/{target_id}/messages", "channel": f"/channels/{target_id}/messages"}
-        result = await self.request("POST", paths[kind], {"content": content, "msg_type": 0, "msg_id": msg_id})
+        message_paths = {
+            "group": f"/v2/groups/{target_id}/messages",
+            "c2c": f"/v2/users/{target_id}/messages",
+            "channel": f"/channels/{target_id}/messages",
+        }
+        if kind not in message_paths:
+            raise QQBotAPIError(f"不支持的消息目标类型: {kind}")
+
+        if kind == "channel":
+            # Guild channels use the legacy message API rather than v2 rich media.
+            channel_content = _MEDIA_TAG.sub(lambda match: match.group("url"), content).strip()
+            return self._message_id(await self.request(
+                "POST", message_paths[kind], {"content": channel_content, "msg_id": msg_id}
+            ))
+
+        text, media_items = _outgoing_parts(content)
+        if not media_items:
+            return self._message_id(await self._send_v2_payload(
+                message_paths[kind], {"content": text, "msg_type": 0, "msg_id": msg_id, "msg_seq": 1}
+            ))
+
+        file_path = (
+            f"/v2/groups/{target_id}/files"
+            if kind == "group"
+            else f"/v2/users/{target_id}/files"
+        )
+        sequence = 1
+        platform_id: str | None = None
+        if text:
+            platform_id = self._message_id(await self._send_v2_payload(
+                message_paths[kind],
+                {"content": text, "msg_type": 0, "msg_id": msg_id, "msg_seq": sequence},
+            ))
+            sequence += 1
+
+        for media_kind, url in media_items:
+            uploaded = await self.request("POST", file_path, {
+                "file_type": _MEDIA_FILE_TYPES[media_kind],
+                "url": url,
+                "srv_send_msg": False,
+            })
+            file_info = uploaded.get("file_info") or (uploaded.get("media") or {}).get("file_info")
+            if not file_info:
+                raise QQBotAPIError(f"QQ Bot {media_kind} 上传成功但响应缺少 file_info: {uploaded}")
+            logger.info("QQ Bot 富媒体上传完成：target=%s type=%s", target_id, media_kind)
+            platform_id = self._message_id(await self._send_v2_payload(
+                message_paths[kind],
+                {
+                    "msg_type": 7,
+                    "media": {"file_info": file_info},
+                    "msg_id": msg_id,
+                    "msg_seq": sequence,
+                },
+            ))
+            sequence += 1
+        return platform_id
+
+    async def _send_v2_payload(self, path: str, payload: dict[str, Any]) -> dict[str, Any]:
+        result = await self.request("POST", path, payload)
         if result.get("err_code"):
             raise QQBotAPIError(f"发送失败 {result.get('err_code')}: {result.get('message')} trace={result.get('trace_id')}")
+        return result
+
+    @staticmethod
+    def _message_id(result: dict[str, Any]) -> str | None:
         return str(result.get("id")) if result.get("id") else None
 
     async def _request_json(self, url: str, payload: dict[str, Any] | None = None, *, method: str = "POST", headers: dict[str, str] | None = None) -> dict[str, Any]:
@@ -98,6 +185,12 @@ class QQBotClient:
             try:
                 with urlopen(request, timeout=15) as response:
                     return json.loads(response.read().decode() or "{}")
+            except HTTPError as exc:
+                detail = exc.read().decode(errors="replace").strip()
+                raise QQBotAPIError(
+                    f"QQ Bot HTTP {method} {url} 失败: HTTP {exc.code} {exc.reason}; "
+                    f"response={detail[:1000] or '<empty>'}"
+                ) from exc
             except Exception as exc:
                 raise QQBotAPIError(f"QQ Bot HTTP {method} {url} 失败: {exc}") from exc
         return await asyncio.to_thread(execute)
