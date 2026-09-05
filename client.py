@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from collections import OrderedDict
 import json
 import re
 import time
@@ -27,6 +28,7 @@ _MARKDOWN_MARKERS = re.compile(
     r"(?m)(?:^\s{0,3}(?:#{1,6}\s+|[-*+]\s+|\d+[.)]\s+|>\s+|```)|"
     r"\*\*[^*\n]+\*\*|__[^_\n]+__|`[^`\n]+`|\[[^\]\n]+\]\([^\s)]+\))"
 )
+_MAX_REPLY_SEQUENCE_KEYS = 4096
 
 
 def _outgoing_parts(content: str) -> tuple[str, list[tuple[str, str]]]:
@@ -58,6 +60,8 @@ class QQBotClient:
         self._token_lock = asyncio.Lock()
         self._bot_openid = ""
         self._bot_openid_lock = asyncio.Lock()
+        self._reply_sequences: OrderedDict[tuple[str, str], int] = OrderedDict()
+        self._reply_sequence_lock = asyncio.Lock()
 
     async def access_token(self) -> str:
         async with self._token_lock:
@@ -136,8 +140,9 @@ class QQBotClient:
 
         text, media_items = _outgoing_parts(content)
         if not media_items:
+            sequence = await self._reserve_reply_sequences(message_paths[kind], msg_id, 1)
             return self._message_id(await self._send_v2_text(
-                message_paths[kind], text, msg_id, 1
+                message_paths[kind], text, msg_id, sequence
             ))
 
         file_path = (
@@ -145,7 +150,8 @@ class QQBotClient:
             if kind == "group"
             else f"/v2/users/{target_id}/files"
         )
-        sequence = 1
+        part_count = len(media_items) + bool(text)
+        sequence = await self._reserve_reply_sequences(message_paths[kind], msg_id, part_count)
         platform_id: str | None = None
         if text:
             platform_id = self._message_id(await self._send_v2_text(
@@ -174,6 +180,16 @@ class QQBotClient:
             ))
             sequence += 1
         return platform_id
+
+    async def _reserve_reply_sequences(self, path: str, msg_id: str, count: int) -> int:
+        """Reserve unique msg_seq values across separate replies to one QQ message."""
+        key = (path, msg_id)
+        async with self._reply_sequence_lock:
+            first = self._reply_sequences.pop(key, 1)
+            self._reply_sequences[key] = first + count
+            while len(self._reply_sequences) > _MAX_REPLY_SEQUENCE_KEYS:
+                self._reply_sequences.popitem(last=False)
+            return first
 
     def _markdown_enabled(self) -> bool:
         return bool(self.config().get("markdown_enabled", True))
