@@ -157,6 +157,20 @@ class QQBotMediaSendingTests(unittest.IsolatedAsyncioTestCase):
             }),
         ])
 
+    async def test_separate_replies_to_same_message_keep_incrementing_sequence(self):
+        client = RecordingClient()
+        target = {"kind": "group", "id": "group-1"}
+
+        await client.send_message(target, "图片生成中", "source-message")
+        await client.send_message(
+            target,
+            "[image,url=https://example.com/result.jpg]",
+            "source-message",
+        )
+
+        message_calls = [call for call in client.calls if call[1].endswith("/messages")]
+        self.assertEqual([call[2]["msg_seq"] for call in message_calls], [1, 2])
+
     async def test_text_and_media_increment_reply_sequence(self):
         client = RecordingClient()
 
