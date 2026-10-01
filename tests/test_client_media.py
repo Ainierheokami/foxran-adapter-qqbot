@@ -75,7 +75,7 @@ class QQBotMediaSendingTests(unittest.IsolatedAsyncioTestCase):
 
         await client.send_message(
             {"kind": "group", "id": "group-1"},
-            "## 结果\n\n- 第一项\n- 第二项",
+            [("text", "## 结果\n\n- 第一项\n- 第二项")],
             "source-message",
         )
 
@@ -90,7 +90,7 @@ class QQBotMediaSendingTests(unittest.IsolatedAsyncioTestCase):
         client = RecordingClient()
 
         await client.send_message(
-            {"kind": "group", "id": "group-1"}, "普通回复", "source-message"
+            {"kind": "group", "id": "group-1"}, [("text", "普通回复")], "source-message"
         )
 
         self.assertEqual(client.calls[0][2]["msg_type"], 0)
@@ -99,7 +99,7 @@ class QQBotMediaSendingTests(unittest.IsolatedAsyncioTestCase):
         client = RejectMarkdownClient()
 
         result = await client.send_message(
-            {"kind": "group", "id": "group-1"}, "**重点**", "source-message"
+            {"kind": "group", "id": "group-1"}, [("text", "**重点**")], "source-message"
         )
 
         self.assertEqual(result, "message-2")
@@ -110,7 +110,7 @@ class QQBotMediaSendingTests(unittest.IsolatedAsyncioTestCase):
         client = RecordingClient()
 
         await client.send_message(
-            {"kind": "channel", "id": "channel-1"}, "# 标题", "source-message"
+            {"kind": "channel", "id": "channel-1"}, [("text", "# 标题")], "source-message"
         )
 
         self.assertEqual(client.calls[0][2], {
@@ -123,7 +123,7 @@ class QQBotMediaSendingTests(unittest.IsolatedAsyncioTestCase):
 
         await client.send_message(
             {"kind": "group", "id": "group-1"},
-            "**视频已生成**\n[video,url=https://example.com/a.mp4]",
+            [("text", "**视频已生成**\n"), ("video", "https://example.com/a.mp4")],
             "source-message",
         )
 
@@ -138,7 +138,7 @@ class QQBotMediaSendingTests(unittest.IsolatedAsyncioTestCase):
 
         result = await client.send_message(
             {"kind": "group", "id": "group-1"},
-            "[video,url=https://example.com/cache/video]",
+            [("video", "https://example.com/cache/video")],
             "source-message",
         )
 
@@ -161,10 +161,10 @@ class QQBotMediaSendingTests(unittest.IsolatedAsyncioTestCase):
         client = RecordingClient()
         target = {"kind": "group", "id": "group-1"}
 
-        await client.send_message(target, "图片生成中", "source-message")
+        await client.send_message(target, [("text", "图片生成中")], "source-message")
         await client.send_message(
             target,
-            "[image,url=https://example.com/result.jpg]",
+            [("image", "https://example.com/result.jpg")],
             "source-message",
         )
 
@@ -176,7 +176,7 @@ class QQBotMediaSendingTests(unittest.IsolatedAsyncioTestCase):
 
         await client.send_message(
             {"kind": "c2c", "id": "user-1"},
-            "生成完成\n[image,url=https://example.com/a.jpg]\n[video,url=https://example.com/a.mp4]",
+            [("text", "生成完成\n"), ("image", "https://example.com/a.jpg"), ("text", "\n"), ("video", "https://example.com/a.mp4")],
             "source-message",
         )
 
@@ -191,7 +191,7 @@ class QQBotMediaSendingTests(unittest.IsolatedAsyncioTestCase):
 
         await client.send_message(
             {"kind": "group", "id": "group-1"},
-            "下载：[file,url=https://example.com/archive.zip]",
+            [("text", "下载："), ("link", "https://example.com/archive.zip")],
             "source-message",
         )
 

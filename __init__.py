@@ -8,6 +8,10 @@ router.include_router(webhook_router)
 
 
 def register_adapter(registry):
+    from app.outbound import outbound_ports
+    from .handlers import qqbot_outbound_port
+
+    outbound_ports.register("qqbot", qqbot_outbound_port, owner=__name__)
     adapter = QQBotAdapter()
     registry.register_adapter("qqbot", adapter)
     registry.register_adapter("qq_openapi", adapter)

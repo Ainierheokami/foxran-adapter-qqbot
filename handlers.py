@@ -4,17 +4,15 @@ from collections import deque
 import re
 from typing import Any
 
-import app.api.core as api_core
-from app.adapters.control.policy import platform_policy
-from app.adapters.message_protocol import make_user_message
+from typing import Optional
+
+from app.adapters.qqbot.adapter import outgoing_parts, parts_as_text
 from app.adapters.qqbot.client import QQBotAPIError, QQBotClient, qqbot_client, qqbot_clients
-from app.adapters.qqbot.config import qqbot_config
-from app.api.core import active_processors, get_or_create_session_context
-from app.inbound import ConversationRef, Sender
+from app.inbound import ConversationRef, InboundEvent, PlatformFacts, Sender, SessionIdOptions
+from app.inbound import pipeline
 from app.logger import setup_logger
-from app.outbound import bind_conversation
-from app.tasks.core.session_processor import SessionProcessor
-from starlette.websockets import WebSocketState
+from app.message import MessageChain
+from app.outbound import OutboundMessage
 
 logger = setup_logger(__name__)
 MESSAGE_EVENTS = {
@@ -90,36 +88,64 @@ async def event_is_mention(
         return False
 
 
-class QQBotReplySender:
-    def __init__(self, session_ctx: Any, client: QQBotClient) -> None:
-        self.session_ctx = session_ctx
-        self.client = client
+class QQBotBinding:
+    """How the framework pipeline reaches back into QQBot for one event."""
 
-    @property
-    def client_state(self) -> WebSocketState:
-        return WebSocketState.CONNECTED
+    def __init__(self, target: dict[str, str], msg_id: str, account_id: str) -> None:
+        self.target = target
+        self.msg_id = msg_id
+        self.account_id = account_id
 
-    async def send_json(self, data: dict[str, Any]) -> None:
-        reply = data.get("reply")
-        if reply is None and data.get("type") == "assistant_message":
-            reply = data.get("content") or (data.get("message") or {}).get("content")
-        reply = str(reply or "").strip()
-        if not reply:
-            return
-        target = self.session_ctx.session_notes.get("qqbot_target")
-        msg_id = self.session_ctx.session_notes.get("qqbot_msg_id")
+    def on_conversation(self, session: Any) -> None:
+        # QQ replies are passive: they go to the channel/group/user of the latest
+        # message and must quote its id.
+        session.platform_state["qqbot_target"] = self.target
+        session.platform_state["qqbot_msg_id"] = self.msg_id
+
+    async def before_agent(self, session: Any) -> None:
+        pass
+
+    async def fetch_message(self, session: Any, platform_message_id: str) -> Any:
+        return None
+
+    def log_message(self, segments: Any) -> None:
+        pass
+
+    def on_self_message(self, session: Any) -> None:
+        pass
+
+
+class QQBotOutboundPort:
+    """Foxran outbound port for the QQ Bot OpenAPI (core-refactor R5a)."""
+
+    def encode(self, session: Any, segments: MessageChain) -> OutboundMessage:
+        parts = outgoing_parts(segments)
+        return OutboundMessage(text=parts_as_text(parts), payload=parts)
+
+    async def deliver(self, session: Any, conversation: Any, message: OutboundMessage, message_id: Optional[str]) -> Optional[str]:
+        if not message.text:
+            return None
+        target = session.platform_state.get("qqbot_target")
+        msg_id = session.platform_state.get("qqbot_msg_id")
         if not isinstance(target, dict) or not msg_id:
             logger.warning("QQ Bot 回复丢弃：缺少 target 或 msg_id")
-            return
+            return None
+        client = qqbot_clients.get(conversation.account_id)
         try:
-            logger.info("QQ Bot 正在发送回复：target=%s msg_id=%s content=%s", target.get("id"), msg_id, reply[:200])
-            platform_id = await self.client.send_message(target, reply, str(msg_id))
-            logger.info("QQ Bot 回复发送成功：target=%s platform_message_id=%s", target.get("id"), platform_id)
-            message_id = data.get("message_id") or data.get("id")
-            if platform_id and message_id:
-                self.session_ctx.log.record_platform_id(str(message_id), platform_id)
+            logger.info("QQ Bot 正在发送回复：target=%s msg_id=%s content=%s", target.get("id"), msg_id, message.text[:200])
+            platform_id = await client.send_message(target, message.payload, str(msg_id))
         except QQBotAPIError as exc:
             logger.error("QQ Bot 回复失败: %s", exc)
+            return None
+        logger.info("QQ Bot 回复发送成功：target=%s platform_message_id=%s", target.get("id"), platform_id)
+        return platform_id
+
+    async def send_action(self, account_id: str, action: str, params: dict[str, Any], echo: Optional[str] = None) -> bool:
+        logger.warning("QQ Bot 不支持平台动作: %s", action)
+        return False
+
+
+qqbot_outbound_port = QQBotOutboundPort()
 
 
 async def handle_event(
@@ -148,52 +174,34 @@ async def handle_event(
     is_mention = await event_is_mention(event_type, data, client)
     cfg = client.config()
     bot_id = str(cfg.get("bot_openid") or cfg.get("app_id") or account_id)
-    decision = platform_policy.evaluate(
-        "qqbot",
-        message_type,
-        user_id,
-        conversation_id if message_type == "group" else None,
-        is_mention,
-        bot_id=bot_id,
-    )
+    content = str(data.get("content") or "")
     logger.info(
-        "QQ Bot 收到消息：account=%s type=%s target=%s user=%s mention=%s reply=%s reason=%s content=%s",
-        account_id, event_type, target["id"], user_id, is_mention, decision.should_reply,
-        decision.reason, str(data.get("content") or "")[:200],
+        "QQ Bot 收到消息：account=%s type=%s target=%s user=%s mention=%s content=%s",
+        account_id, event_type, target["id"], user_id, is_mention, content[:200],
     )
-    if not decision.should_reply:
-        logger.info("QQ Bot 消息仅记录/忽略：策略未触发回复")
-        return
-    account_part = "" if account_id == "default" else f"{account_id}:"
-    session_id = f"qqbot:{account_part}{target['kind']}:{conversation_id if cfg.get('use_group_as_session', True) else user_id}"
     user = data.get("author") or {}
+    message_id = str(data.get("id") or event_id or "")
+    # Session ids keep the format already stored in history.
+    session_key = f"{target['kind']}:{conversation_id if cfg.get('use_group_as_session', True) else user_id}"
     try:
-        session_ctx = await get_or_create_session_context(session_id, user_id, str(user.get("username") or user.get("user_openid") or user_id), "qqbot")
-        bind_conversation(
-            session_ctx,
-            ConversationRef(platform="qqbot", scope="group" if message_type == "group" else "private", id=str(target["id"]), account_id=account_id),
-            Sender(id=user_id, name=str(user.get("username") or user.get("user_openid") or user_id)),
-        )
-        # REMOVE-IN: R5 — QQBot replies still route through these notes until it joins the pipeline.
-        session_ctx.session_notes["qqbot_target"] = target
-        session_ctx.session_notes["qqbot_msg_id"] = str(data.get("id") or event_id)
-        session_ctx.session_notes["qqbot_account_id"] = account_id
-        session_ctx.set_websocket(QQBotReplySender(session_ctx, client))
-        logger.info("QQ Bot 将消息交给会话处理：session=%s", session_id)
-        from app.data_mappers import get_message_processor
-        processor = get_message_processor()
-        raw_content = data.get("content") or ""
-        # Preserve QQ attachments for the platform adapter while retaining content as raw history.
-        processed = await processor.process_incoming_message("qqbot", data, {"role": "user", "content": raw_content})
-        message = make_user_message(segments=processed.segments, user_id=user_id, user_name=str(user.get("username") or user_id), platform="qqbot", platform_id=data.get("id"), raw_content=raw_content)
-        session_ctx.log.bind_platform_id(message.message_id, data.get("id"))
-        if session_ctx.session_id not in active_processors:
-            if not api_core.core_agent:
-                logger.error("QQ Bot 接收消息失败：AI 核心尚未初始化")
-                return
-            worker = SessionProcessor(session_ctx, api_core.core_agent)
-            await worker.start()
-            active_processors[session_ctx.session_id] = worker
-        await session_ctx.handle_new_message(message)
+        await pipeline.submit(InboundEvent(
+            kind="message",
+            conversation=ConversationRef(
+                platform="qqbot",
+                scope="group" if message_type == "group" else "private",
+                id=conversation_id,
+                account_id=account_id,
+                self_id=bot_id,
+            ),
+            sender=Sender(id=user_id, name=str(user.get("username") or user.get("user_openid") or user_id)),
+            raw_content=data,
+            raw_text=content,
+            binding=QQBotBinding(target, message_id, account_id),
+            session_options=SessionIdOptions(prefix="qqbot", include_bot_id=False),
+            session_key=session_key,
+            platform_message_id=message_id or None,
+            facts=PlatformFacts(mentions_self=is_mention, mentioned_ids=tuple(sorted(mention_openids(data)))),
+            raw_event=data,
+        ))
     except Exception:
         logger.exception("处理 QQ Bot 事件失败 type=%s", event_type)

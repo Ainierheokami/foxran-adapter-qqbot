@@ -19,10 +19,6 @@ class QQBotAPIError(RuntimeError):
     pass
 
 
-_MEDIA_TAG = re.compile(
-    r"\[(?P<kind>image|video|voice|file)\s*,\s*url=(?P<url>[^,\]\s]+)(?:\s*,[^\]]*)?\]",
-    re.IGNORECASE,
-)
 _MEDIA_FILE_TYPES = {"image": 1, "video": 2, "voice": 3}
 _MARKDOWN_MARKERS = re.compile(
     r"(?m)(?:^\s{0,3}(?:#{1,6}\s+|[-*+]\s+|\d+[.)]\s+|>\s+|```)|"
@@ -31,18 +27,10 @@ _MARKDOWN_MARKERS = re.compile(
 _MAX_REPLY_SEQUENCE_KEYS = 4096
 
 
-def _outgoing_parts(content: str) -> tuple[str, list[tuple[str, str]]]:
-    """Split Foxran media tags from text; unsupported files degrade to links."""
-    media: list[tuple[str, str]] = []
-
-    def replace(match: re.Match[str]) -> str:
-        kind, url = match.group("kind").lower(), match.group("url")
-        if kind in _MEDIA_FILE_TYPES:
-            media.append((kind, url))
-            return ""
-        return url
-
-    text = _MEDIA_TAG.sub(replace, content)
+def _v2_parts(parts: list[tuple[str, str]]) -> tuple[str, list[tuple[str, str]]]:
+    """Text (files as links) and the rich media the v2 API uploads separately."""
+    media = [(kind, value) for kind, value in parts if kind in _MEDIA_FILE_TYPES]
+    text = "".join(value for kind, value in parts if kind not in _MEDIA_FILE_TYPES)
     text = re.sub(r"[ \t]+\n", "\n", text)
     text = re.sub(r"\n{3,}", "\n\n", text).strip()
     return text, media
@@ -121,7 +109,8 @@ class QQBotClient:
             raise QQBotAPIError(f"QQ Bot 账户不存在: {self.account_id}")
         return cfg
 
-    async def send_message(self, target: dict[str, str], content: str, msg_id: str) -> str | None:
+    async def send_message(self, target: dict[str, str], parts: list[tuple[str, str]], msg_id: str) -> str | None:
+        """Send reply ``parts`` (see ``adapter.outgoing_parts``) as a passive reply to ``msg_id``."""
         kind, target_id = target["kind"], target["id"]
         message_paths = {
             "group": f"/v2/groups/{target_id}/messages",
@@ -133,12 +122,12 @@ class QQBotClient:
 
         if kind == "channel":
             # Guild channels use the legacy message API rather than v2 rich media.
-            channel_content = _MEDIA_TAG.sub(lambda match: match.group("url"), content).strip()
+            channel_content = "".join(value for _kind, value in parts).strip()
             return self._message_id(await self._send_channel_text(
                 message_paths[kind], channel_content, msg_id
             ))
 
-        text, media_items = _outgoing_parts(content)
+        text, media_items = _v2_parts(parts)
         if not media_items:
             sequence = await self._reserve_reply_sequences(message_paths[kind], msg_id, 1)
             return self._message_id(await self._send_v2_text(
