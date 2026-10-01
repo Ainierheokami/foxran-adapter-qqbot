@@ -6,7 +6,7 @@ from typing import Any
 
 import app.api.core as api_core
 from app.adapters.control.policy import platform_policy
-from app.adapters.message_protocol import bind_platform_id, make_user_message
+from app.adapters.message_protocol import make_user_message
 from app.adapters.qqbot.client import QQBotAPIError, QQBotClient, qqbot_client, qqbot_clients
 from app.adapters.qqbot.config import qqbot_config
 from app.api.core import active_processors, get_or_create_session_context
@@ -117,7 +117,7 @@ class QQBotReplySender:
             logger.info("QQ Bot 回复发送成功：target=%s platform_message_id=%s", target.get("id"), platform_id)
             message_id = data.get("message_id") or data.get("id")
             if platform_id and message_id:
-                self.session_ctx.set_platform_id_for_message(str(message_id), platform_id)
+                self.session_ctx.log.record_platform_id(str(message_id), platform_id)
         except QQBotAPIError as exc:
             logger.error("QQ Bot 回复失败: %s", exc)
 
@@ -186,7 +186,7 @@ async def handle_event(
         # Preserve QQ attachments for the platform adapter while retaining content as raw history.
         processed = await processor.process_incoming_message("qqbot", data, {"role": "user", "content": raw_content})
         message = make_user_message(segments=processed.segments, user_id=user_id, user_name=str(user.get("username") or user_id), platform="qqbot", platform_id=data.get("id"), raw_content=raw_content)
-        bind_platform_id(session_ctx, message, data.get("id"))
+        session_ctx.log.bind_platform_id(message.message_id, data.get("id"))
         if session_ctx.session_id not in active_processors:
             if not api_core.core_agent:
                 logger.error("QQ Bot 接收消息失败：AI 核心尚未初始化")
