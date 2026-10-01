@@ -10,7 +10,9 @@ from app.adapters.message_protocol import bind_platform_id, make_user_message
 from app.adapters.qqbot.client import QQBotAPIError, QQBotClient, qqbot_client, qqbot_clients
 from app.adapters.qqbot.config import qqbot_config
 from app.api.core import active_processors, get_or_create_session_context
+from app.inbound import ConversationRef, Sender
 from app.logger import setup_logger
+from app.outbound import bind_conversation
 from app.tasks.core.session_processor import SessionProcessor
 from starlette.websockets import WebSocketState
 
@@ -167,6 +169,12 @@ async def handle_event(
     user = data.get("author") or {}
     try:
         session_ctx = await get_or_create_session_context(session_id, user_id, str(user.get("username") or user.get("user_openid") or user_id), "qqbot")
+        bind_conversation(
+            session_ctx,
+            ConversationRef(platform="qqbot", scope="group" if message_type == "group" else "private", id=str(target["id"]), account_id=account_id),
+            Sender(id=user_id, name=str(user.get("username") or user.get("user_openid") or user_id)),
+        )
+        # REMOVE-IN: R5 — QQBot replies still route through these notes until it joins the pipeline.
         session_ctx.session_notes["qqbot_target"] = target
         session_ctx.session_notes["qqbot_msg_id"] = str(data.get("id") or event_id)
         session_ctx.session_notes["qqbot_account_id"] = account_id
