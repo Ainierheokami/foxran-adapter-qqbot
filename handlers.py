@@ -177,7 +177,7 @@ async def handle_event(
         raw_content = data.get("content") or ""
         # Preserve QQ attachments for the platform adapter while retaining content as raw history.
         processed = await processor.process_incoming_message("qqbot", data, {"role": "user", "content": raw_content})
-        message = make_user_message(content=processed.internal, user_id=user_id, user_name=str(user.get("username") or user_id), platform="qqbot", platform_id=data.get("id"), raw_content=raw_content)
+        message = make_user_message(segments=processed.segments, user_id=user_id, user_name=str(user.get("username") or user_id), platform="qqbot", platform_id=data.get("id"), raw_content=raw_content)
         bind_platform_id(session_ctx, message, data.get("id"))
         if session_ctx.session_id not in active_processors:
             if not api_core.core_agent:
