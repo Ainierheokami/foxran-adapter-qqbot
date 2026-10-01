@@ -105,6 +105,9 @@ class QQBotBinding:
     async def before_agent(self, session: Any) -> None:
         pass
 
+    async def on_command(self, session: Any, result: Any) -> None:
+        pass
+
     async def fetch_message(self, session: Any, platform_message_id: str) -> Any:
         return None
 
@@ -182,7 +185,8 @@ async def handle_event(
     user = data.get("author") or {}
     message_id = str(data.get("id") or event_id or "")
     # Session ids keep the format already stored in history.
-    session_key = f"{target['kind']}:{conversation_id if cfg.get('use_group_as_session', True) else user_id}"
+    account_part = "" if account_id == "default" else f"{account_id}:"
+    session_id = f"qqbot:{account_part}{target['kind']}:{conversation_id if cfg.get('use_group_as_session', True) else user_id}"
     try:
         await pipeline.submit(InboundEvent(
             kind="message",
@@ -198,7 +202,7 @@ async def handle_event(
             raw_text=content,
             binding=QQBotBinding(target, message_id, account_id),
             session_options=SessionIdOptions(prefix="qqbot", include_bot_id=False),
-            session_key=session_key,
+            session_id=session_id,
             platform_message_id=message_id or None,
             facts=PlatformFacts(mentions_self=is_mention, mentioned_ids=tuple(sorted(mention_openids(data)))),
             raw_event=data,
