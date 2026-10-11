@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import mimetypes
 from typing import Any
 
 from app.adapters.base.adapter import BasePlatformAdapter
@@ -53,6 +54,49 @@ def outgoing_parts(segments: MessageChain) -> list[tuple[str, str]]:
     return parts
 
 
+def _attachment_kind(attachment: dict) -> str:
+    """image / video / voice / file，按 content_type 判断，缺失时按文件名猜。"""
+    content_type = str(attachment.get("content_type") or "").split(";", 1)[0].strip().lower()
+    if not content_type:
+        from urllib.parse import urlparse
+
+        url = str(attachment.get("url") or attachment.get("proxy_url") or "")
+        for candidate in (str(attachment.get("filename") or ""), urlparse(url).path):
+            content_type = mimetypes.guess_type(candidate)[0] or ""
+            if content_type:
+                break
+    if content_type.startswith("image/"):
+        return "image"
+    if content_type.startswith("video/"):
+        return "video"
+    # QQ 语音附件的 content_type 就是 "voice"
+    if content_type == "voice" or content_type.startswith("audio/"):
+        return "voice"
+    return "file"
+
+
+def _int_or_none(value: Any) -> int | None:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def attachment_segment(attachment: dict) -> Segment | None:
+    url = attachment.get("url") or attachment.get("proxy_url")
+    if not url:
+        return None
+    media = MediaRef(url=str(url))
+    kind = _attachment_kind(attachment)
+    if kind == "image":
+        return Image(media=media, summary=attachment.get("filename"))
+    if kind == "video":
+        return Video(media=media)
+    if kind == "voice":
+        return Voice(media=media)
+    return File(media=media, name=attachment.get("filename"), size=_int_or_none(attachment.get("size")))
+
+
 def parts_as_text(parts: list[tuple[str, str]]) -> str:
     """Plain text with media inlined as URLs (the form guild channels receive)."""
     return "".join(value for _kind, value in parts).strip()
@@ -69,11 +113,8 @@ class QQBotAdapter(BasePlatformAdapter):
             content, attachments = str(platform_data or ""), []
         result = MessageChain([content] if content else [])
         for attachment in attachments:
-            if not isinstance(attachment, dict):
-                continue
-            url = attachment.get("url") or attachment.get("proxy_url")
-            if url:
-                result.append(Image(media=MediaRef(url=str(url)), summary=attachment.get("filename")))
+            if isinstance(attachment, dict) and (segment := attachment_segment(attachment)) is not None:
+                result.append(segment)
         return result
 
     def to_platform_format(self, internal_data: Any) -> str:
