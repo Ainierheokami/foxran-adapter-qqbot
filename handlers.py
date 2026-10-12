@@ -178,15 +178,17 @@ async def handle_event(
     cfg = client.config()
     bot_id = str(cfg.get("bot_openid") or cfg.get("app_id") or account_id)
     content = str(data.get("content") or "")
-    logger.info(
-        "QQ Bot 收到消息：account=%s type=%s target=%s user=%s mention=%s content=%s",
-        account_id, event_type, target["id"], user_id, is_mention, content[:200],
-    )
     user = data.get("author") or {}
     message_id = str(data.get("id") or event_id or "")
     # Session ids keep the format already stored in history.
     account_part = "" if account_id == "default" else f"{account_id}:"
     session_id = f"qqbot:{account_part}{target['kind']}:{conversation_id if cfg.get('use_group_as_session', True) else user_id}"
+    # File-only: the console shows the agent's reply tree instead of every group message.
+    logger.info(
+        "QQ Bot 收到消息：account=%s type=%s target=%s user=%s mention=%s content=%s",
+        account_id, event_type, target["id"], user_id, is_mention, content[:200],
+        extra={"session_id": session_id, "console": False},
+    )
     try:
         await pipeline.submit(InboundEvent(
             kind="message",
