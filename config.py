@@ -17,6 +17,7 @@ DEFAULTS: dict[str, Any] = {
     "webhook_path": "/qqbot/webhook", "api_base_url": "https://api.bot.qq.com",
     "token_url": "https://bots.qq.com/app/getAppAccessToken", "intents": (1 << 25) | (1 << 30),
     "shards": 1, "use_group_as_session": True, "markdown_enabled": True,
+    "c2c_stream": True, "c2c_stream_interval_ms": 600,
     "reconnect_initial_delay": 2.0,
     "reconnect_max_delay": 30.0,
 }

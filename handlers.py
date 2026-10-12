@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from collections import deque
 import re
 from typing import Any
@@ -7,7 +8,8 @@ from typing import Any
 from typing import Optional
 
 from app.adapters.qqbot.adapter import outgoing_parts, parts_as_text
-from app.adapters.qqbot.client import QQBotAPIError, QQBotClient, qqbot_client, qqbot_clients
+from app.adapters.qqbot.client import QQBotAPIError, QQBotClient, _v2_parts, qqbot_client, qqbot_clients
+from app.adapters.qqbot.streaming import C2CStreamDraft, c2c_streams, stream_enabled, stream_interval
 from app.inbound import ConversationRef, InboundEvent, PlatformFacts, Sender, SessionIdOptions
 from app.inbound import pipeline
 from app.logger import setup_logger
@@ -121,22 +123,81 @@ class QQBotBinding:
 class QQBotOutboundPort:
     """Foxran outbound port for the QQ Bot OpenAPI (core-refactor R5a)."""
 
+    # Replies streamed as drafts are finalized through ``deliver(stream_id=...)``.
+    supports_stream_drafts = True
+
     def encode(self, session: Any, segments: MessageChain) -> OutboundMessage:
         parts = outgoing_parts(segments)
         return OutboundMessage(text=parts_as_text(parts), payload=parts)
 
-    async def deliver(self, session: Any, conversation: Any, message: OutboundMessage, message_id: Optional[str]) -> Optional[str]:
-        if not message.text:
-            return None
+    async def on_stream_event(self, session: Any, conversation: Any, event: dict[str, Any]) -> None:
+        """Render Foxran's streamed reply drafts as QQ C2C stream messages."""
+        session_id = str(getattr(session, "session_id", "") or "")
+        kind = event.get("type")
+        if kind == "history_sync":
+            # Foxran resynced history: drafts of the failed attempt are void.
+            for draft in c2c_streams.pop_session(session_id):
+                asyncio.create_task(draft.abandon())
+            return
+        stream_id = str(event.get("stream_id") or "")
+        if not session_id or not stream_id:
+            return
+        if kind == "content_start":
+            if event.get("role") == "thought":
+                return
+            target = session.platform_state.get("qqbot_target")
+            msg_id = session.platform_state.get("qqbot_msg_id")
+            if not isinstance(target, dict) or target.get("kind") != "c2c" or not msg_id:
+                return
+            client = qqbot_clients.get(conversation.account_id)
+            if not stream_enabled(client):
+                return
+            c2c_streams.start(
+                session_id,
+                stream_id,
+                C2CStreamDraft(client, str(target["id"]), str(msg_id), stream_interval(client)),
+            )
+        elif kind == "content_token":
+            draft = c2c_streams.get(session_id, stream_id)
+            if draft is not None:
+                draft.feed(str(event.get("token") or ""))
+        elif kind == "content_end":
+            draft = c2c_streams.get(session_id, stream_id)
+            if draft is not None:
+                draft.end()
+
+    async def deliver(
+        self,
+        session: Any,
+        conversation: Any,
+        message: OutboundMessage,
+        message_id: Optional[str],
+        stream_id: Optional[str] = None,
+    ) -> Optional[str]:
         target = session.platform_state.get("qqbot_target")
         msg_id = session.platform_state.get("qqbot_msg_id")
+        draft = c2c_streams.pop(str(getattr(session, "session_id", "") or ""), stream_id) if stream_id else None
+        if not message.text:
+            if draft is not None:
+                await draft.abandon()
+            return None
         if not isinstance(target, dict) or not msg_id:
             logger.warning("QQ Bot 回复丢弃：缺少 target 或 msg_id")
             return None
         client = qqbot_clients.get(conversation.account_id)
+        parts = message.payload
         try:
+            if draft is not None:
+                text, media = _v2_parts(parts)
+                platform_id = await draft.finalize(text)
+                if platform_id is not None:
+                    logger.info("QQ Bot 流式回复完成：target=%s platform_message_id=%s 字数=%d", target.get("id"), platform_id, len(text))
+                    if not media:
+                        return platform_id
+                    # The stream carried the text; media follows as its own messages.
+                    parts = media
             logger.info("QQ Bot 正在发送回复：target=%s msg_id=%s content=%s", target.get("id"), msg_id, message.text[:200])
-            platform_id = await client.send_message(target, message.payload, str(msg_id))
+            platform_id = await client.send_message(target, parts, str(draft.msg_id if draft is not None else msg_id))
         except QQBotAPIError as exc:
             logger.error("QQ Bot 回复失败: %s", exc)
             return None

@@ -170,6 +170,40 @@ class QQBotClient:
             sequence += 1
         return platform_id
 
+    async def reserve_c2c_sequence(self, openid: str, msg_id: str) -> int:
+        """One msg_seq for a C2C stream: every frame of the stream shares it."""
+        return await self._reserve_reply_sequences(f"/v2/users/{openid}/messages", msg_id, 1)
+
+    async def send_c2c_stream_frame(
+        self,
+        openid: str,
+        *,
+        content: str,
+        state: int,
+        msg_id: str,
+        msg_seq: int,
+        index: int,
+        stream_msg_id: str | None = None,
+    ) -> dict[str, Any]:
+        """One frame of a C2C stream message (replace mode: ``content`` is the full text so far).
+
+        ``state`` is 1 while generating and 10 for the final frame; ``index``
+        starts at 0 and grows by one per frame. Only C2C supports streaming.
+        """
+        payload: dict[str, Any] = {
+            "input_mode": "replace",
+            "input_state": state,
+            "content_type": "markdown",
+            "content_raw": content,
+            "event_id": msg_id,
+            "msg_id": msg_id,
+            "msg_seq": msg_seq,
+            "index": index,
+        }
+        if stream_msg_id:
+            payload["stream_msg_id"] = stream_msg_id
+        return await self._send_v2_payload(f"/v2/users/{openid}/stream_messages", payload)
+
     async def _reserve_reply_sequences(self, path: str, msg_id: str, count: int) -> int:
         """Reserve unique msg_seq values across separate replies to one QQ message."""
         key = (path, msg_id)

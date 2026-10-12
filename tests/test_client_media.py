@@ -26,18 +26,29 @@ def _load_client_module():
     logger.setup_logger = lambda _name: _Logger()
     config = types.ModuleType("app.adapters.qqbot.config")
     config.qqbot_config = _Config()
-    sys.modules.update({
+    stubs = {
         "app": app,
         "app.adapters": adapters,
         "app.adapters.qqbot": qqbot,
         "app.logger": logger,
         "app.adapters.qqbot.config": config,
-    })
-    path = Path(__file__).resolve().parents[1] / "client.py"
-    spec = importlib.util.spec_from_file_location("qqbot_client_under_test", path)
-    module = importlib.util.module_from_spec(spec)
-    assert spec and spec.loader
-    spec.loader.exec_module(module)
+    }
+    # Stub the framework only while client.py imports, so tests that run
+    # inside Foxran still see the real ``app`` package afterwards.
+    saved = {name: sys.modules.get(name) for name in stubs}
+    sys.modules.update(stubs)
+    try:
+        path = Path(__file__).resolve().parents[1] / "client.py"
+        spec = importlib.util.spec_from_file_location("qqbot_client_under_test", path)
+        module = importlib.util.module_from_spec(spec)
+        assert spec and spec.loader
+        spec.loader.exec_module(module)
+    finally:
+        for name, previous in saved.items():
+            if previous is None:
+                sys.modules.pop(name, None)
+            else:
+                sys.modules[name] = previous
     return module
 
 

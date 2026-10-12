@@ -105,6 +105,10 @@ def parts_as_text(parts: list[tuple[str, str]]) -> str:
 class QQBotAdapter(BasePlatformAdapter):
     """Convert QQ OpenAPI messages to Foxran's portable message segments."""
 
+    # Foxran streams reply drafts to the outbound port; it renders them as C2C
+    # stream messages (groups and channels still get whole messages).
+    supports_streaming_output = True
+
     def from_platform_format(self, platform_data: Any) -> MessageChain:
         if isinstance(platform_data, dict):
             content = str(platform_data.get("content") or "")
