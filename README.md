@@ -18,6 +18,10 @@ Recalling messages is the host's framework tool `delete_msg`; this adapter imple
 
 Do not put AppSecret in source control. Grant the selected intents in the QQ console; requesting an unauthorized intent causes the gateway to close with 4014.
 
+## 📦 Python 依赖
+
+`requirements.txt` 列出本适配器自己用到的库（`websockets>=14`、`cryptography`），插件市场安装和更新时会自动 `pip install`。手动安装时在宿主的 Python 环境里执行 `pip install -r requirements.txt`。
+
 ## 🖥 WebUI 账户设置
 
 账户设置页随适配器一起发布：`web/` 是源码，构建产物是根目录的 `index.umd.js`（`foxran.yaml` 中的 `adapter.frontend_bundle`）。WebUI 启动时加载它，页面通过 `settingsPanels` 出现在“设置 → 适配器”里，并复用宿主提供的 `window.Foxran.api` 与 `window.Foxran.ui` 组件。需要宿主 4.0.0 及以上。
