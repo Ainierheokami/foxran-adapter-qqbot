@@ -7,13 +7,13 @@ from typing import Any
 from typing import Optional
 
 from app.adapters.qqbot.adapter import outgoing_parts, parts_as_text
-from app.adapters.qqbot.client import QQBotAPIError, QQBotClient, _v2_parts, qqbot_client, qqbot_clients
+from app.adapters.qqbot.client import QQBotAPIError, QQBotClient, _v2_parts, qqbot_clients
 from app.adapters.qqbot.streaming import c2c_streams, stream_enabled, stream_interval
 from app.inbound import ConversationRef, InboundEvent, PlatformFacts, Sender, SessionIdOptions
 from app.inbound import pipeline
 from app.logger import setup_logger
 from app.message import MessageChain
-from app.outbound import OutboundMessage
+from app.outbound import OutboundMessage, RecallRefused
 
 logger = setup_logger(__name__)
 MESSAGE_EVENTS = {
@@ -72,7 +72,7 @@ def mention_openids(data: dict[str, Any]) -> set[str]:
 async def event_is_mention(
     event_type: str,
     data: dict[str, Any],
-    client: QQBotClient | None = None,
+    client: QQBotClient,
 ) -> bool:
     """Return whether an event explicitly mentions this bot, including full-group events."""
     if event_type in {"GROUP_AT_MESSAGE_CREATE", "AT_MESSAGE_CREATE"}:
@@ -83,7 +83,7 @@ async def event_is_mention(
     if not mentioned:
         return False
     try:
-        return await (client or qqbot_client).bot_openid() in mentioned
+        return await client.bot_openid() in mentioned
     except QQBotAPIError as exc:
         logger.warning("QQ Bot 无法识别全量群消息中的艾特: %s", exc)
         return False
@@ -198,6 +198,18 @@ class QQBotOutboundPort:
             return None
         logger.info("QQ Bot 回复发送成功：target=%s platform_message_id=%s", target.get("id"), platform_id)
         return platform_id
+
+    async def recall(self, session: Any, conversation: Any, platform_message_id: str, *, own: bool) -> None:
+        """Recall a message (framework tool ``delete_msg``); QQ bots can only recall their own."""
+        if not own:
+            raise RecallRefused("QQ 机器人只能撤回自己发出的消息")
+        target = session.platform_state.get("qqbot_target")
+        if not isinstance(target, dict):
+            raise RecallRefused("找不到这条消息所在的 QQ 会话")
+        try:
+            await qqbot_clients.get(conversation.account_id).recall_message(target, platform_message_id)
+        except QQBotAPIError as exc:
+            raise RecallRefused(str(exc)) from exc
 
     async def send_action(self, account_id: str, action: str, params: dict[str, Any], echo: Optional[str] = None) -> bool:
         logger.warning("QQ Bot 不支持平台动作: %s", action)

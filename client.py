@@ -109,6 +109,20 @@ class QQBotClient:
             raise QQBotAPIError(f"QQ Bot 账户不存在: {self.account_id}")
         return cfg
 
+    async def recall_message(self, target: dict[str, str], message_id: str) -> None:
+        """Recall a message the bot sent to ``target`` (QQ only lets bots recall their own messages)."""
+        kind, target_id = target["kind"], target["id"]
+        message_paths = {
+            "group": f"/v2/groups/{target_id}/messages/{message_id}",
+            "c2c": f"/v2/users/{target_id}/messages/{message_id}",
+            "channel": f"/channels/{target_id}/messages/{message_id}",
+        }
+        if kind not in message_paths:
+            raise QQBotAPIError(f"不支持的消息目标类型: {kind}")
+        result = await self.request("DELETE", message_paths[kind])
+        if result.get("err_code") or result.get("code"):
+            raise QQBotAPIError(f"撤回失败 {result.get('err_code') or result.get('code')}: {result.get('message')}")
+
     async def send_message(self, target: dict[str, str], parts: list[tuple[str, str]], msg_id: str) -> str | None:
         """Send reply ``parts`` (see ``adapter.outgoing_parts``) as a passive reply to ``msg_id``."""
         kind, target_id = target["kind"], target["id"]
@@ -306,5 +320,3 @@ class QQBotClientManager:
 
 
 qqbot_clients = QQBotClientManager()
-# Backwards-compatible default client for external integrations.
-qqbot_client = qqbot_clients.get("default")

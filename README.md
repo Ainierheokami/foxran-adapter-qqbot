@@ -14,4 +14,16 @@ Markdown replies are enabled by default with `markdown_enabled: true`. The adapt
 
 Private (C2C) replies stream as they are generated, using QQ's `stream_messages` API (`c2c_stream: true`; groups and channels have no stream API and still receive whole messages). Foxran builds whose outbound sender does not forward stream events keep sending whole replies. QQ shows one stream at a time, so a reply of several messages streams them in order: each message is finished as soon as the model closes it, then the next one starts. A frame is sent at most every `c2c_stream_interval_ms` (default 600, minimum 300). A message the agent sends only after a tool or task step (`after=` in its plan) is already complete when it is sent, so it cannot stream as it is generated; with `c2c_stream_reveal: true` (default) it is revealed over at most five frames, adding about (frames − 1) × interval of delay, otherwise it appears at once. Images and other media in a streamed reply follow as separate messages; if the delivered text differs from what the stream showed, the reply is sent again as an ordinary message. Text QQ has already shown cannot be recalled: when Foxran discards a draft and regenerates the reply, the discarded draft stays visible. If QQ refuses to open a stream (for example the bot lacks Markdown permission), the adapter sends whole messages for the next 10 minutes. Streaming requires `markdown_enabled: true`.
 
+Recalling messages is the host's framework tool `delete_msg`; this adapter implements `recall` on its outbound port. QQ only lets bots recall their own messages, so recalling another member's message is refused.
+
 Do not put AppSecret in source control. Grant the selected intents in the QQ console; requesting an unauthorized intent causes the gateway to close with 4014.
+
+## 🖥 WebUI 账户设置
+
+账户设置页随适配器一起发布：`web/` 是源码，构建产物是根目录的 `index.umd.js`（`foxran.yaml` 中的 `adapter.frontend_bundle`）。WebUI 启动时加载它，页面通过 `settingsPanels` 出现在“设置 → 适配器”里，并复用宿主提供的 `window.Foxran.api` 与 `window.Foxran.ui` 组件。需要宿主 4.0.0 及以上。
+
+修改 `web/` 后重新构建：
+
+```bash
+cd web && npm install && npm run build
+```

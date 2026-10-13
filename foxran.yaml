@@ -3,7 +3,7 @@ manifest_version: 1
 extension:
   id: "qqbot"
   name: "QQ Bot OpenAPI"
-  version: "1.5.1"
+  version: "1.6.0"
   type: "adapter"
   description: "QQ 机器人 OpenAPI v2（WebSocket 与 Webhook）适配器"
   author: "Foxran"
@@ -11,10 +11,11 @@ extension:
   tags: ["qq", "qqbot", "openapi"]
 
 compatibility:
-  foxran: ">=3.1.0"
+  foxran: ">=4.0.0"
   python: ">=3.10"
 
 adapter:
   entry: "__init__.py"
+  frontend_bundle: "index.umd.js"
   config_template: "template.yml"
   platforms: ["qqbot", "qq_openapi"]
