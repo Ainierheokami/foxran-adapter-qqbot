@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import asyncio
 from collections import deque
 import re
 from typing import Any
@@ -9,7 +8,7 @@ from typing import Optional
 
 from app.adapters.qqbot.adapter import outgoing_parts, parts_as_text
 from app.adapters.qqbot.client import QQBotAPIError, QQBotClient, _v2_parts, qqbot_client, qqbot_clients
-from app.adapters.qqbot.streaming import C2CStreamDraft, c2c_streams, stream_enabled, stream_interval
+from app.adapters.qqbot.streaming import c2c_streams, stream_enabled, stream_interval
 from app.inbound import ConversationRef, InboundEvent, PlatformFacts, Sender, SessionIdOptions
 from app.inbound import pipeline
 from app.logger import setup_logger
@@ -137,7 +136,7 @@ class QQBotOutboundPort:
         if kind == "history_sync":
             # Foxran resynced history: drafts of the failed attempt are void.
             for draft in c2c_streams.pop_session(session_id):
-                asyncio.create_task(draft.abandon())
+                draft.abandon()
             return
         stream_id = str(event.get("stream_id") or "")
         if not session_id or not stream_id:
@@ -152,11 +151,7 @@ class QQBotOutboundPort:
             client = qqbot_clients.get(conversation.account_id)
             if not stream_enabled(client):
                 return
-            c2c_streams.start(
-                session_id,
-                stream_id,
-                C2CStreamDraft(client, str(target["id"]), str(msg_id), stream_interval(client)),
-            )
+            c2c_streams.create(session_id, stream_id, client, str(target["id"]), str(msg_id), stream_interval(client))
         elif kind == "content_token":
             draft = c2c_streams.get(session_id, stream_id)
             if draft is not None:
@@ -179,7 +174,7 @@ class QQBotOutboundPort:
         draft = c2c_streams.pop(str(getattr(session, "session_id", "") or ""), stream_id) if stream_id else None
         if not message.text:
             if draft is not None:
-                await draft.abandon()
+                draft.abandon()
             return None
         if not isinstance(target, dict) or not msg_id:
             logger.warning("QQ Bot 回复丢弃：缺少 target 或 msg_id")
