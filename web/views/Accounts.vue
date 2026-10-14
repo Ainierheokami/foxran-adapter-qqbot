@@ -44,6 +44,7 @@
           <label class="setting-switch qq:md:col-span-2"><span><b>私聊流式回复</b><small>私聊里边生成边显示（QQ 流式消息）；群聊没有流式接口，仍整条发送。需开启 Markdown 回复。</small></span><input v-model="account.c2c_stream" type="checkbox" :disabled="!account.markdown_enabled" @change="markDirty" /></label>
           <label v-if="account.c2c_stream"><span>流式刷新间隔（毫秒）</span><input v-model.number="account.c2c_stream_interval_ms" type="number" min="300" step="100" @input="markDirty" /><small>最低 300；越小越流畅，但更容易被 QQ 限频。</small></label>
           <label v-if="account.c2c_stream" class="setting-switch"><span><b>整段回复逐步显示</b><small>等工具或任务完成后才发的回复，发送前已经写完，无法边生成边显示；开启后分几帧显示（约多 2~3 秒）。</small></span><input v-model="account.c2c_stream_reveal" type="checkbox" @change="markDirty" /></label>
+          <label v-if="account.c2c_stream"><span>等上一条打完字（毫秒/字）</span><input v-model.number="account.c2c_stream_settle_ms_per_char" type="number" min="0" max="200" step="5" @input="markDirty" /><small>QQ 会把文字逐字打出来，下一条一到就停止打字，前一条看起来像被截断。下一条消息或表情图等前一条打完再发，最多等 3 秒；0 表示不等。</small></label>
           <label><span>Gateway 分片数</span><input v-model.number="account.shards" type="number" min="1" @input="markDirty" /></label>
           <label class="setting-switch"><span><b>群聊共享会话</b><small>同群成员共享上下文。</small></span><input v-model="account.use_group_as_session" type="checkbox" @change="markDirty" /></label>
         </AdapterFormSection>
@@ -78,7 +79,7 @@ const error = ref('')
 const message = ref('')
 let timer: number | undefined
 const current = computed(() => accounts.value[selected.value])
-const defaults = (): Account => ({ id: `qqbot-${Date.now().toString(36)}`, name: '新 QQBot', enabled: false, app_id: '', app_secret: '', bot_openid: '', transport: 'websocket', api_base_url: 'https://api.bot.qq.com', token_url: 'https://bots.qq.com/app/getAppAccessToken', intents: 1107296256, shards: 1, use_group_as_session: true, markdown_enabled: true, c2c_stream: true, c2c_stream_interval_ms: 600, c2c_stream_reveal: true, reconnect_initial_delay: 2, reconnect_max_delay: 30 })
+const defaults = (): Account => ({ id: `qqbot-${Date.now().toString(36)}`, name: '新 QQBot', enabled: false, app_id: '', app_secret: '', bot_openid: '', transport: 'websocket', api_base_url: 'https://api.bot.qq.com', token_url: 'https://bots.qq.com/app/getAppAccessToken', intents: 1107296256, shards: 1, use_group_as_session: true, markdown_enabled: true, c2c_stream: true, c2c_stream_interval_ms: 600, c2c_stream_reveal: true, c2c_stream_settle_ms_per_char: 25, reconnect_initial_delay: 2, reconnect_max_delay: 30 })
 function markDirty() { dirty.value = true; message.value = '' }
 function transportLabel(value = '') { return ({ websocket: 'WebSocket', webhook: 'Webhook', both: '双接入' } as Record<string,string>)[value] || value }
 async function fetchAccounts(silent = false) { if (!silent) busy.value = true; try { const fresh = await loadAccounts(); if (!dirty.value || !silent) accounts.value = fresh; error.value = '' } catch (e: any) { error.value = e?.response?.data?.detail || '无法读取 QQBot 配置，请确认适配器已安装并启用。' } finally { busy.value = false } }

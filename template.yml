@@ -20,6 +20,9 @@ c2c_stream_interval_ms: 600 # 两次刷新的最小间隔（毫秒，最低 300�
 # 等工具/任务步骤完成才发送的回复，正文发送前已经完整，无法真正边生成边显示；
 # 开启后分几帧逐步显示（最多 5 帧，约多花 2~3 秒），关闭则一次显示完整内容。
 c2c_stream_reveal: true
+# QQ 客户端会把收到的文字逐字打出来，下一条消息一到就停止打字，前一条看起来像被截断。
+# 下一条流式消息或表情图要等前一条打完（按每字毫秒估算，最多等 3 秒）；0 表示不等。
+c2c_stream_settle_ms_per_char: 25
 reconnect_initial_delay: 2.0
 reconnect_max_delay: 30.0
 
@@ -41,5 +44,6 @@ reconnect_max_delay: 30.0
 #     c2c_stream: true
 #     c2c_stream_interval_ms: 600
 #     c2c_stream_reveal: true
+#     c2c_stream_settle_ms_per_char: 25
 #     reconnect_initial_delay: 2.0
 #     reconnect_max_delay: 30.0

@@ -15,6 +15,11 @@ already shown cannot be rewritten. So a draft:
   its text differs from the shown draft, or the stream failed, the reply is sent
   as an ordinary message.
 
+The QQ client types each frame's new text out locally, and stops that animation
+when another message arrives, leaving the earlier one looking cut off until the
+chat is reopened. So what follows a stream (the next stream, or the reply's
+media) waits until the client has had time to type out what was last sent.
+
 A draft Foxran discards (``history_sync`` after a failed validation) cannot be
 recalled from QQ; it is closed with what it already shows.
 """
@@ -54,6 +59,8 @@ REVEAL_MIN_CHARS = 40
 REVEAL_MAX_FRAMES = 5
 REVEAL_CHARS_PER_FRAME = 120
 _REVEAL_BOUNDARY = re.compile(r"[\n。！？；，、.!?;, ]")
+# The client's typing animation is waited for at most this long.
+SETTLE_MAX_SECONDS = 3.0
 
 _backoff_until: dict[str, float] = {}
 
@@ -124,6 +131,15 @@ def stream_enabled(client: QQBotClient) -> bool:
     return time.monotonic() >= _backoff_until.get(client.account_id, 0.0)
 
 
+def settle_per_char(client: QQBotClient) -> float:
+    """Seconds the client takes to type out one character (0 = don't wait)."""
+    try:
+        value = float(client.config().get("c2c_stream_settle_ms_per_char", 25))
+    except (TypeError, ValueError):
+        value = 25.0
+    return max(0.0, min(value, 200.0)) / 1000
+
+
 def stream_interval(client: QQBotClient) -> float:
     try:
         value = int(client.config().get("c2c_stream_interval_ms") or 600)
@@ -159,12 +175,20 @@ class C2CStreamDraft:
         self.abandoned = False
         self.failed = False
         self.finished = asyncio.Event()
+        # When the client will have typed out everything sent so far.
+        self.settled_at = 0.0
         self._wake = asyncio.Event()
         self._task: asyncio.Task | None = None
 
     @property
     def opened(self) -> bool:
         return self.stream_msg_id is not None
+
+    async def wait_settled(self) -> None:
+        """Wait until the client has typed out this stream's text."""
+        delay = self.settled_at - time.monotonic()
+        if delay > 0:
+            await asyncio.sleep(delay)
 
     def start(self, on_exit: Any) -> None:
         self._task = asyncio.create_task(self._run())
@@ -195,6 +219,7 @@ class C2CStreamDraft:
             if self.previous is not None:
                 # QQ shows one stream at a time: wait for the previous message.
                 await self.previous.finished.wait()
+                await self.previous.wait_settled()
                 self.previous = None
             deadline = time.monotonic() + DRAFT_TIMEOUT_SECONDS
             if not self.ended:
@@ -300,6 +325,12 @@ class C2CStreamDraft:
             self.stream_msg_id = str(result.get("id") or "") or None
             if self.stream_msg_id is None:
                 raise QQBotAPIError(f"流式消息响应缺少 id: {result}")
+        added = len(text) - len(self.sent) if text.startswith(self.sent) else len(text)
+        now = time.monotonic()
+        self.settled_at = min(
+            max(self.settled_at, now) + max(0, added) * settle_per_char(self.client),
+            now + SETTLE_MAX_SECONDS,
+        )
         self.sent = text
 
     async def finalize(self, text: str) -> str | None:
@@ -372,6 +403,19 @@ class C2CStreamRegistry:
 
     def pop(self, session_id: str, stream_id: str) -> C2CStreamDraft | None:
         return self._drafts.pop((session_id, stream_id), None)
+
+    def shown(self, session_id: str, stream_ids: Any = None) -> bool:
+        """Whether one of the session's drafts is (or is about to be) on the user's screen.
+
+        A draft QQ refused before it opened shows nothing; any other draft that
+        was not abandoned is either shown or will be once its turn comes.
+        """
+        wanted = None if stream_ids is None else {str(value) for value in stream_ids}
+        return any(
+            not draft.abandoned and not (draft.failed and not draft.opened)
+            for (sid, stream_id), draft in self._drafts.items()
+            if sid == session_id and (wanted is None or stream_id in wanted)
+        )
 
     def pop_session(self, session_id: str) -> list[C2CStreamDraft]:
         keys = [key for key in self._drafts if key[0] == session_id]

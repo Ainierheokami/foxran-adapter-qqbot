@@ -129,6 +129,10 @@ class QQBotOutboundPort:
         parts = outgoing_parts(segments)
         return OutboundMessage(text=parts_as_text(parts), payload=parts)
 
+    def stream_drafts_shown(self, session: Any, stream_ids: Any = None) -> bool:
+        """QQ cannot take a stream message back: a shown draft counts as sent."""
+        return c2c_streams.shown(str(getattr(session, "session_id", "") or ""), stream_ids)
+
     async def on_stream_event(self, session: Any, conversation: Any, event: dict[str, Any]) -> None:
         """Render Foxran's streamed reply drafts as QQ C2C stream messages."""
         session_id = str(getattr(session, "session_id", "") or "")
@@ -189,7 +193,9 @@ class QQBotOutboundPort:
                     logger.info("QQ Bot 流式回复完成：target=%s platform_message_id=%s 字数=%d", target.get("id"), platform_id, len(text))
                     if not media:
                         return platform_id
-                    # The stream carried the text; media follows as its own messages.
+                    # The stream carried the text; media follows as its own messages,
+                    # once the client has typed the text out (it would cut it short).
+                    await draft.wait_settled()
                     parts = media
             logger.info("QQ Bot 正在发送回复：target=%s msg_id=%s content=%s", target.get("id"), msg_id, message.text[:200])
             platform_id = await client.send_message(target, parts, str(draft.msg_id if draft is not None else msg_id))

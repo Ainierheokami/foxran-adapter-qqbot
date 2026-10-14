@@ -17,7 +17,9 @@ class _Client:
         self.fail_states = set(fail_states)
         self.open_streams = set()
         self.stream_count = 0
-        self.cfg = {"c2c_stream": True, "markdown_enabled": True, "c2c_stream_interval_ms": 300}
+        # The client's typing animation is waited for only in the tests about it.
+        self.cfg = {"c2c_stream": True, "markdown_enabled": True, "c2c_stream_interval_ms": 300,
+                    "c2c_stream_settle_ms_per_char": 0}
 
     def config(self):
         return self.cfg
@@ -146,6 +148,41 @@ async def test_two_messages_stream_one_after_another(client):
     assert second_frames[-1]["content"] == "第二句前半，第二句后半。"
 
 
+async def test_next_message_waits_for_the_client_to_type_the_previous_one_out(client):
+    client.cfg["c2c_stream_settle_ms_per_char"] = 10
+    session = _session()
+    await _event(session, "content_start", stream_id="s1")
+    await _event(session, "content_token", stream_id="s1", token="字" * 20)
+    await _event(session, "content_end", stream_id="s1")
+    await _event(session, "content_start", stream_id="s2")
+    await _event(session, "content_token", stream_id="s2", token="下一条。")
+    await _event(session, "content_end", stream_id="s2")
+    loop = asyncio.get_running_loop()
+    stamps = []
+    original = client.send_c2c_stream_frame
+
+    async def stamped(openid, **frame):
+        stamps.append(loop.time())
+        return await original(openid, **frame)
+
+    client.send_c2c_stream_frame = stamped
+
+    await PORT.deliver(session, CONVERSATION, _encoded("字" * 20), "i1", stream_id="s1")
+    await PORT.deliver(session, CONVERSATION, _encoded("下一条。"), "i2", stream_id="s2")
+
+    second_start = next(i for i, f in enumerate(client.frames) if f["stream"] == "stream-2")
+    # 20 字 × 10ms：第二条至少晚 0.2 秒开始。
+    assert stamps[second_start] - stamps[second_start - 1] >= 0.18
+
+
+async def test_settle_wait_is_capped(client):
+    draft = streaming.C2CStreamDraft(client, "u1", "m1", 0.02)
+    client.cfg["c2c_stream_settle_ms_per_char"] = 200
+    await draft._frame("字" * 1000, streaming.STATE_DONE)
+
+    assert draft.settled_at - streaming.time.monotonic() <= streaming.SETTLE_MAX_SECONDS
+
+
 async def test_delivered_text_different_from_stream_is_sent_again(client):
     session = _session()
     await _event(session, "content_start", stream_id="s1")
@@ -268,3 +305,14 @@ async def test_reveal_can_be_turned_off(client):
 
     assert await _send_resolved(_session(), "send_1", LONG_REPLY) == "stream-1"
     assert [frame["state"] for frame in client.frames] == [streaming.STATE_DONE]
+
+
+async def test_shown_counts_live_drafts_only(client):
+    session = _session()
+    assert not PORT.stream_drafts_shown(session)
+    await _event(session, "content_start", stream_id="s1")
+    assert PORT.stream_drafts_shown(session)
+    assert PORT.stream_drafts_shown(session, ["s1"])
+    assert not PORT.stream_drafts_shown(session, ["other"])
+    await _event(session, "history_sync")
+    assert not PORT.stream_drafts_shown(session)
