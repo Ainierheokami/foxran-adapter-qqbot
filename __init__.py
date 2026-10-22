@@ -14,7 +14,6 @@ def register_adapter(registry):
     outbound_ports.register("qqbot", qqbot_outbound_port, owner=__name__)
     adapter = QQBotAdapter()
     registry.register_adapter("qqbot", adapter)
-    registry.register_adapter("qq_openapi", adapter)
 
 
 async def enable():
