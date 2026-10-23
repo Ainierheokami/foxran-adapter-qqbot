@@ -5,7 +5,14 @@ from typing import Any
 
 from typing import Optional
 
-from app.adapters.qqbot.adapter import MENTION_PATTERN, mention_target, outgoing_parts, parts_as_text
+from app.adapters.qqbot.adapter import (
+    MENTION_PATTERN,
+    mention_target,
+    outgoing_parts,
+    parts_as_text,
+    remember_name,
+    short_name,
+)
 from app.adapters.qqbot.client import QQBotAPIError, QQBotClient, _v2_parts, qqbot_clients
 from app.adapters.qqbot.streaming import c2c_streams, stream_enabled, stream_interval
 from app.inbound import ConversationRef, InboundEvent, PlatformFacts, Sender, SessionIdOptions
@@ -44,8 +51,9 @@ def display_name(user: dict[str, Any], user_id: str) -> str:
     """群和私聊事件不带昵称，只有三十多位的 openid；用末四位起个短名，完整 ID 仍是用户 ID。"""
     name = user.get("username") or user.get("nickname") or user.get("member_name")
     if name:
+        remember_name(user_id, str(name))
         return str(name)
-    return f"QQ用户{user_id[-4:].upper()}" if len(user_id) > 12 else user_id
+    return short_name(user_id)
 
 
 def target_for_event(event_type: str, data: dict[str, Any]) -> tuple[dict[str, str], str, str, str]:

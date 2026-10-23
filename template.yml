@@ -14,6 +14,9 @@ intents: 1107296256
 shards: 1
 use_group_as_session: true
 markdown_enabled: true # 自动识别 Markdown 并用 msg_type 2 发送；被 QQ 拒绝时降级为文本
+# 群里 @ 人的写法：auto 在开了 Markdown 时发 QQ 的 @ 标记（整条按 Markdown 发，才能渲染成 @），
+# 没开或被 QQ 拒绝时改发「@昵称」文字；text 总是发文字（Markdown 里的 @ 也不渲染时改成这个）
+group_mention: "auto"
 # 私聊（C2C）回复边生成边显示，使用 QQ 流式消息；群聊没有流式接口，仍整条发送。需要 markdown_enabled。
 c2c_stream: true
 c2c_stream_interval_ms: 600 # 两次刷新的最小间隔（毫秒，最低 300）

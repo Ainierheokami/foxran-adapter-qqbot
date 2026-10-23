@@ -12,6 +12,15 @@ BOT = "BOTOPENID0000000000000000000000A"
 USER = "E1A2B3C4D5E6F708192A3B4C5D6E7F80"
 
 
+@pytest.fixture(autouse=True)
+def _forget_names():
+    from app.adapters.qqbot import adapter
+
+    adapter._KNOWN_NAMES.clear()
+    yield
+    adapter._KNOWN_NAMES.clear()
+
+
 def test_inbound_mentions_in_both_syntaxes_become_segments():
     chain = QQBotAdapter().from_platform_format({
         "content": f'<@{BOT}> 你看 <qqbot-at-user id="{USER}" /> 说的<qqbot-at-everyone />',
@@ -31,26 +40,83 @@ def test_mention_detection_understands_the_new_syntax_and_ignores_everyone():
     assert mention_openids(data) == {BOT}
 
 
-@pytest.mark.parametrize("kind, expected", [
-    ("group", f'你好<qqbot-at-user id="{USER}" />'),
-    ("channel", f"你好<@{USER}>"),
-    ("c2c", "你好"),
-])
-async def test_outbound_mention_is_written_for_the_target(kind, expected):
-    sent = []
-
+def _recording_client(sent, **config):
     class Recording(QQBotClient):
         async def request(self, method, path, payload=None):
             sent.append(payload)
             return {"id": "m1"}
 
         def config(self, force_reload=False):
-            return {"markdown_enabled": False}
+            return {"markdown_enabled": False, **config}
 
+    return Recording()
+
+
+@pytest.mark.parametrize("kind, expected", [
+    # 群里的 <qqbot-at-user /> 会被 QQ 原样显示，默认写成「@昵称」文字
+    ("group", "你好@QQ用户7F80"),
+    ("channel", f"你好<@{USER}>"),
+    ("c2c", "你好"),
+])
+async def test_outbound_mention_is_written_for_the_target(kind, expected):
+    sent = []
     chain = MessageChain(["你好", Mention(target=USER)])
-    await Recording().send_message({"kind": kind, "id": "t"}, outgoing_parts(chain), "src")
+    await _recording_client(sent).send_message({"kind": kind, "id": "t"}, outgoing_parts(chain), "src")
 
     assert sent[0]["content"] == expected
+
+
+async def test_group_mention_uses_the_nickname_seen_inbound_and_keeps_a_space():
+    QQBotAdapter().from_platform_format({
+        "content": f'<qqbot-at-user id="{USER}" /> 早',
+        "mentions": [{"member_openid": USER, "nickname": "阿霜"}],
+    })
+    sent = []
+    chain = MessageChain([Mention(target=USER), "你好"])
+    await _recording_client(sent).send_message({"kind": "group", "id": "t"}, outgoing_parts(chain), "src")
+
+    assert sent[0]["content"] == "@阿霜 你好"
+
+
+async def test_group_mention_tag_is_sent_as_markdown_so_qq_renders_it():
+    # 标记在纯文本（msg_type 0）里会原样显示，只有 Markdown 消息才渲染成 @
+    sent = []
+    chain = MessageChain(["你好", Mention(target=USER)])
+    await _recording_client(sent, markdown_enabled=True).send_message({"kind": "group", "id": "t"}, outgoing_parts(chain), "src")
+
+    assert sent[0]["msg_type"] == 2
+    assert sent[0]["markdown"]["content"] == f'你好<qqbot-at-user id="{USER}" />'
+
+
+async def test_group_mention_falls_back_to_nickname_when_markdown_is_refused():
+    from app.adapters.qqbot.client import QQBotAPIError
+
+    sent = []
+
+    class Refusing(QQBotClient):
+        async def request(self, method, path, payload=None):
+            if payload.get("msg_type") == 2:
+                raise QQBotAPIError("QQ Bot HTTP POST 失败: HTTP 400")
+            sent.append(payload)
+            return {"id": "m1"}
+
+        def config(self, force_reload=False):
+            return {"markdown_enabled": True}
+
+    chain = MessageChain(["你好", Mention(target=USER)])
+    await Refusing().send_message({"kind": "group", "id": "t"}, outgoing_parts(chain), "src")
+
+    assert sent == [{"content": "你好@QQ用户7F80", "msg_type": 0, "msg_id": "src", "msg_seq": 1}]
+
+
+async def test_group_mention_text_style_never_sends_the_tag():
+    sent = []
+    chain = MessageChain(["你好", Mention(target=USER)])
+    await _recording_client(sent, markdown_enabled=True, group_mention="text").send_message(
+        {"kind": "group", "id": "t"}, outgoing_parts(chain), "src",
+    )
+
+    assert sent[0]["msg_type"] == 0 and sent[0]["content"] == "你好@QQ用户7F80"
 
 
 def test_everyone_is_never_sent_as_a_real_mention():

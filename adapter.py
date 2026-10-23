@@ -4,6 +4,7 @@ import base64
 import json
 import mimetypes
 import re
+from collections import OrderedDict
 from typing import Any
 
 from app.adapters.base.adapter import BasePlatformAdapter
@@ -29,6 +30,7 @@ MEDIA_KINDS = {Image: "image", Video: "video", Voice: "voice"}
 
 # 消息里的 @：频道和全量群消息写 <@openid>（频道也有 <@!id>），群消息的新写法是
 # <qqbot-at-user id="openid" />；@全体是 <qqbot-at-everyone />。
+# 出站时这个标记只在 Markdown 消息里渲染，纯文本里会原样显示（见 client._send_v2_text）。
 MENTION_PATTERN = re.compile(
     r"<@!?(?P<legacy>[^>\s]+)>"
     r"|<qqbot-at-user\s+id=\"(?P<user>[^\"]+)\"\s*/?>"
@@ -73,6 +75,30 @@ def split_mentions(content: str, names: dict[str, str] | None = None) -> list[Se
     return pieces
 
 
+# openid -> 昵称：群事件只带 openid，昵称来自 @ 列表和发言人，出站 @ 时用来写「@昵称」
+_KNOWN_NAMES: OrderedDict[str, str] = OrderedDict()
+_MAX_KNOWN_NAMES = 4096
+
+
+def remember_name(openid: str, name: str | None) -> None:
+    openid, name = str(openid or ""), str(name or "").strip()
+    if not openid or not name:
+        return
+    _KNOWN_NAMES.pop(openid, None)
+    _KNOWN_NAMES[openid] = name
+    while len(_KNOWN_NAMES) > _MAX_KNOWN_NAMES:
+        _KNOWN_NAMES.popitem(last=False)
+
+
+def short_name(openid: str) -> str:
+    """没有昵称时的称呼：三十多位的 openid 取末四位，和历史里显示的发言人一致。"""
+    return f"QQ用户{openid[-4:].upper()}" if len(openid) > 12 else openid
+
+
+def known_name(openid: str) -> str:
+    return _KNOWN_NAMES.get(openid) or short_name(openid)
+
+
 def mention_names(platform_data: dict) -> dict[str, str]:
     """被 @ 的人的昵称（QQ 给了才有）：openid -> 昵称。"""
     names: dict[str, str] = {}
@@ -83,23 +109,41 @@ def mention_names(platform_data: dict) -> dict[str, str]:
         name = item.get("nickname") or item.get("username") or item.get("member_name")
         if openid and name:
             names[str(openid)] = str(name)
+            remember_name(str(openid), str(name))
     return names
 
 
-def render_mention(target: str, kind: str) -> str:
-    """How a ``("mention", openid)`` part is written for a target kind; private chats have no mentions."""
+def render_mention(target: str, kind: str, group_style: str = "text") -> str:
+    """How a ``("mention", openid)`` part is written for a target kind; private chats have no mentions.
+
+    群里的 ``<qqbot-at-user id="…" />`` 只在 Markdown 消息（msg_type 2）里渲染成 @，
+    纯文本消息里会原样显示，所以发纯文本时用 ``group_style="text"`` 写「@昵称」。
+    """
     if target == Mention.ALL:
         # @全体需要额外权限，被拒会整条发不出去；只写成文字
         return "@全体成员" if kind != "c2c" else ""
     if kind == "group":
-        return f'<qqbot-at-user id="{target}" />'
+        if group_style == "tag":
+            return f'<qqbot-at-user id="{target}" />'
+        return f"@{known_name(target)}"
     if kind == "channel":
         return f"<@{target}>"
     return ""
 
 
-def render_mentions(parts: list[tuple[str, str]], kind: str) -> list[tuple[str, str]]:
-    return [("text", render_mention(value, kind)) if part == "mention" else (part, value) for part, value in parts]
+def render_mentions(parts: list[tuple[str, str]], kind: str, group_style: str = "text") -> list[tuple[str, str]]:
+    rendered: list[tuple[str, str]] = []
+    for index, (part, value) in enumerate(parts):
+        if part != "mention":
+            rendered.append((part, value))
+            continue
+        text = render_mention(value, kind, group_style)
+        following = parts[index + 1][1] if index + 1 < len(parts) else ""
+        # 文字 @ 和后面的话之间留个空格，不然「@阿霜你好」昵称和正文粘在一起
+        if text.startswith("@") and following and not following[:1].isspace():
+            text += " "
+        rendered.append(("text", text))
+    return rendered
 
 
 def public_url(media: MediaRef) -> str | None:
@@ -121,6 +165,7 @@ def outgoing_parts(segments: MessageChain) -> list[tuple[str, str]]:
         elif isinstance(seg, Reply):
             continue  # QQ replies are always passive replies to the triggering message
         elif isinstance(seg, Mention):
+            remember_name(seg.target, seg.name)
             parts.append(("mention", seg.target))
         elif type(seg) in MEDIA_KINDS:
             url = public_url(seg.media)

@@ -140,20 +140,22 @@ class QQBotClient:
         # 导入放这里：client.py 不依赖 adapter，测试里也能单独加载
         from app.adapters.qqbot.adapter import render_mentions
 
-        parts = render_mentions(parts, kind)
+        rendered = render_mentions(parts, kind, self._group_mention_style())
 
         if kind == "channel":
             # Guild channels use the legacy message API rather than v2 rich media.
-            channel_content = "".join(value for _kind, value in parts).strip()
+            channel_content = "".join(value for _kind, value in rendered).strip()
             return self._message_id(await self._send_channel_text(
                 message_paths[kind], channel_content, msg_id
             ))
 
-        text, media_items = _v2_parts(parts)
+        text, media_items = _v2_parts(rendered)
+        # @ 标记只在 Markdown 消息里渲染；纯文本或 Markdown 被拒时改发「@昵称」
+        plain_text, _ = _v2_parts(render_mentions(parts, kind, "text"))
         if not media_items:
             sequence = await self._reserve_reply_sequences(message_paths[kind], msg_id, 1)
             return self._message_id(await self._send_v2_text(
-                message_paths[kind], text, msg_id, sequence
+                message_paths[kind], text, msg_id, sequence, plain_text=plain_text
             ))
 
         file_path = (
@@ -166,7 +168,7 @@ class QQBotClient:
         platform_id: str | None = None
         if text:
             platform_id = self._message_id(await self._send_v2_text(
-                message_paths[kind], text, msg_id, sequence
+                message_paths[kind], text, msg_id, sequence, plain_text=plain_text
             ))
             sequence += 1
 
@@ -239,6 +241,11 @@ class QQBotClient:
     def _markdown_enabled(self) -> bool:
         return bool(self.config().get("markdown_enabled", True))
 
+    def _group_mention_style(self) -> str:
+        """群里 @ 的写法：auto 在能发 Markdown 时用 QQ 的 @ 标记，否则（或配置为 text）写「@昵称」。"""
+        style = str(self.config().get("group_mention") or "auto")
+        return "tag" if style == "auto" and self._markdown_enabled() else "text"
+
     async def _send_channel_text(self, path: str, text: str, msg_id: str) -> dict[str, Any]:
         if self._markdown_enabled() and _looks_like_markdown(text):
             try:
@@ -257,8 +264,12 @@ class QQBotClient:
         text: str,
         msg_id: str,
         msg_seq: int,
+        plain_text: str | None = None,
     ) -> dict[str, Any]:
-        if self._markdown_enabled() and _looks_like_markdown(text):
+        """``plain_text`` 是同一条消息不带 @ 标记的写法；两者不同说明有 @，必须走 Markdown 才能渲染。"""
+        plain_text = text if plain_text is None else plain_text
+        has_mention_tag = plain_text != text
+        if self._markdown_enabled() and (has_mention_tag or _looks_like_markdown(text)):
             try:
                 return await self._send_v2_payload(path, {
                     "msg_type": 2,
@@ -271,7 +282,7 @@ class QQBotClient:
                     raise
                 logger.warning("QQ Bot Markdown 被拒绝，降级为纯文本：%s", exc)
         return await self._send_v2_payload(path, {
-            "content": text,
+            "content": plain_text,
             "msg_type": 0,
             "msg_id": msg_id,
             "msg_seq": msg_seq,
