@@ -85,12 +85,12 @@ def render_draft(raw: str, *, complete: bool = False) -> str:
     media, which follows the stream as separate messages.
     """
     from app.agent.codec import tag_codec
-    from app.data_mappers import get_message_processor
-    from app.data_mappers.url_reference import canonicalize_segments_for_history
+    from app.agent.compression.url_reference import canonicalize_segments_for_history
+    from app.agent.compression.url_reference import canonicalize_text_for_history
     from app.message import ExtensionSegment, MessageChain
 
     source = raw if complete else stable_prefix(raw)
-    text = get_message_processor().content_compressor.decompress_sync(source)
+    text = canonicalize_text_for_history(source)
     chain = canonicalize_segments_for_history(tag_codec.parse(str(text or "")))
     chain = MessageChain([seg for seg in chain if not isinstance(seg, ExtensionSegment)])
     rendered, _media = _v2_parts(outgoing_parts(chain))

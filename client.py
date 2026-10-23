@@ -28,9 +28,13 @@ _MAX_REPLY_SEQUENCE_KEYS = 4096
 
 
 def _v2_parts(parts: list[tuple[str, str]]) -> tuple[str, list[tuple[str, str]]]:
-    """Text (files as links) and the rich media the v2 API uploads separately."""
+    """Text (files as links) and the rich media the v2 API uploads separately.
+
+    Mentions must already be rendered for the target (``render_mentions``); any
+    left over are dropped, as in private chats where QQ has no mentions.
+    """
     media = [(kind, value) for kind, value in parts if kind in _MEDIA_FILE_TYPES]
-    text = "".join(value for kind, value in parts if kind not in _MEDIA_FILE_TYPES)
+    text = "".join(value for kind, value in parts if kind not in _MEDIA_FILE_TYPES and kind != "mention")
     text = re.sub(r"[ \t]+\n", "\n", text)
     text = re.sub(r"\n{3,}", "\n\n", text).strip()
     return text, media
@@ -133,6 +137,10 @@ class QQBotClient:
         }
         if kind not in message_paths:
             raise QQBotAPIError(f"不支持的消息目标类型: {kind}")
+        # 导入放这里：client.py 不依赖 adapter，测试里也能单独加载
+        from app.adapters.qqbot.adapter import render_mentions
+
+        parts = render_mentions(parts, kind)
 
         if kind == "channel":
             # Guild channels use the legacy message API rather than v2 rich media.

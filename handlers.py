@@ -1,18 +1,17 @@
 from __future__ import annotations
 
 from collections import deque
-import re
 from typing import Any
 
 from typing import Optional
 
-from app.adapters.qqbot.adapter import outgoing_parts, parts_as_text
+from app.adapters.qqbot.adapter import MENTION_PATTERN, mention_target, outgoing_parts, parts_as_text
 from app.adapters.qqbot.client import QQBotAPIError, QQBotClient, _v2_parts, qqbot_clients
 from app.adapters.qqbot.streaming import c2c_streams, stream_enabled, stream_interval
 from app.inbound import ConversationRef, InboundEvent, PlatformFacts, Sender, SessionIdOptions
 from app.inbound import pipeline
 from app.logger import setup_logger
-from app.message import MessageChain
+from app.message import Mention, MessageChain
 from app.outbound import OutboundMessage, RecallRefused
 
 logger = setup_logger(__name__)
@@ -26,7 +25,6 @@ MESSAGE_EVENTS = {
 }
 _seen_ids: deque[str] = deque(maxlen=4096)
 _seen_set: set[str] = set()
-MENTION_PATTERN = re.compile(r"<@!?([^>\s]+)>")
 
 
 def _remember(event_id: Any, account_id: str = "default") -> bool:
@@ -40,6 +38,14 @@ def _remember(event_id: Any, account_id: str = "default") -> bool:
     _seen_ids.append(value)
     _seen_set.add(value)
     return True
+
+
+def display_name(user: dict[str, Any], user_id: str) -> str:
+    """群和私聊事件不带昵称，只有三十多位的 openid；用末四位起个短名，完整 ID 仍是用户 ID。"""
+    name = user.get("username") or user.get("nickname") or user.get("member_name")
+    if name:
+        return str(name)
+    return f"QQ用户{user_id[-4:].upper()}" if len(user_id) > 12 else user_id
 
 
 def target_for_event(event_type: str, data: dict[str, Any]) -> tuple[dict[str, str], str, str, str]:
@@ -58,7 +64,8 @@ def target_for_event(event_type: str, data: dict[str, Any]) -> tuple[dict[str, s
 
 def mention_openids(data: dict[str, Any]) -> set[str]:
     """Extract mentioned OpenIDs from a full QQ group message payload."""
-    values = {match.group(1) for match in MENTION_PATTERN.finditer(str(data.get("content") or ""))}
+    values = {mention_target(match) for match in MENTION_PATTERN.finditer(str(data.get("content") or ""))}
+    values.discard(Mention.ALL)
     mentions = data.get("mentions")
     if isinstance(mentions, list):
         for mention in mentions:
@@ -272,7 +279,7 @@ async def handle_event(
                 account_id=account_id,
                 self_id=bot_id,
             ),
-            sender=Sender(id=user_id, name=str(user.get("username") or user.get("user_openid") or user_id)),
+            sender=Sender(id=user_id, name=display_name(user, user_id)),
             raw_content=data,
             raw_text=content,
             binding=QQBotBinding(target, message_id, account_id),
