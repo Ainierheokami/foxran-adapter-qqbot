@@ -145,17 +145,19 @@ class QQBotOutboundPort:
         return OutboundMessage(text=parts_as_text(parts), payload=parts)
 
     def stream_drafts_shown(self, session: Any, stream_ids: Any = None) -> bool:
-        """QQ cannot take a stream message back: a shown draft counts as sent."""
+        """A shown draft counts as sent until an explicit recall succeeds."""
         return c2c_streams.shown(str(getattr(session, "session_id", "") or ""), stream_ids)
+
+    async def discard_stream_drafts(self, session: Any, conversation: Any) -> None:
+        await c2c_streams.discard_session(str(getattr(session, "session_id", "") or ""))
 
     async def on_stream_event(self, session: Any, conversation: Any, event: dict[str, Any]) -> None:
         """Render Foxran's streamed reply drafts as QQ C2C stream messages."""
         session_id = str(getattr(session, "session_id", "") or "")
         kind = event.get("type")
         if kind == "history_sync":
-            # Foxran resynced history: drafts of the failed attempt are void.
-            for draft in c2c_streams.pop_session(session_id):
-                draft.abandon()
+            # Also supports older callers that dispatch this event directly.
+            await self.discard_stream_drafts(session, conversation)
             return
         stream_id = str(event.get("stream_id") or "")
         if not session_id or not stream_id:
@@ -190,10 +192,13 @@ class QQBotOutboundPort:
     ) -> Optional[str]:
         target = session.platform_state.get("qqbot_target")
         msg_id = session.platform_state.get("qqbot_msg_id")
-        draft = c2c_streams.pop(str(getattr(session, "session_id", "") or ""), stream_id) if stream_id else None
+        session_id = str(getattr(session, "session_id", "") or "")
+        c2c_streams.assert_delivery_allowed(session_id, str(msg_id or ""))
+        draft = c2c_streams.get(session_id, stream_id) if stream_id else None
         if not message.text:
             if draft is not None:
-                draft.abandon()
+                await draft.discard_and_recall()
+                c2c_streams.pop(session_id, stream_id)
             return None
         if not isinstance(target, dict) or not msg_id:
             logger.warning("QQ Bot 回复丢弃：缺少 target 或 msg_id")
@@ -204,6 +209,7 @@ class QQBotOutboundPort:
             if draft is not None:
                 text, media = _v2_parts(parts)
                 platform_id = await draft.finalize(text)
+                c2c_streams.pop(session_id, stream_id)
                 if platform_id is not None:
                     logger.info("QQ Bot 流式回复完成：target=%s platform_message_id=%s 字数=%d", target.get("id"), platform_id, len(text))
                     if not media:

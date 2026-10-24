@@ -33,3 +33,14 @@ Do not put AppSecret in source control. Grant the selected intents in the QQ con
 ```bash
 cd web && npm install && npm run build
 ```
+
+## 流式草稿修复（1.8.2）
+
+计划修复需要替换已显示的私聊草稿时，先停止发送并等待在途请求取得消息 ID，再调用撤回接口；撤回成功后才发送新版本。撤回失败会保留旧 ID 并停止本轮替换，避免重复回复。正文未改变时，支持该能力的宿主会直接复用原草稿。实际撤回能否成功仍取决于 QQ 对该消息、账号权限和撤回时限的判断。
+
+独立源码测试（使用宿主 foxran 环境；不会向 QQ 发请求）：
+
+```powershell
+$env:FOXRAN_HOST_ROOT="D:\myfoxbot\foxran_agent"
+conda run --no-capture-output -n foxran python -m pytest --confcutdir=tests --rootdir=tests tests --asyncio-mode=auto -q
+```

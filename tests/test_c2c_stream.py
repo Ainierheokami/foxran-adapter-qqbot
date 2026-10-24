@@ -6,7 +6,7 @@ import pytest
 from app.adapters.qqbot import handlers, streaming
 from app.adapters.qqbot.client import QQBotAPIError
 from app.message import MessageChain
-from app.outbound import OutboundMessage
+from app.outbound import OutboundMessage, RecallRefused
 
 
 class _Client:
@@ -14,6 +14,8 @@ class _Client:
         self.account_id = "default"
         self.frames = []
         self.sent = []
+        self.recalled = []
+        self.fail_recall = False
         self.fail_states = set(fail_states)
         self.open_streams = set()
         self.stream_count = 0
@@ -41,6 +43,12 @@ class _Client:
             self.open_streams.discard(stream_id)
         self.frames.append({**frame, "stream": stream_id})
         return {"id": stream_id}
+
+    async def recall_message(self, target, message_id):
+        if self.fail_recall:
+            raise QQBotAPIError("撤回失败 40054005: 超过可撤回时间")
+        self.recalled.append((target, message_id))
+        self.open_streams.discard(message_id)
 
     async def send_message(self, target, parts, msg_id):
         self.sent.append((target, parts, msg_id))
@@ -183,7 +191,7 @@ async def test_settle_wait_is_capped(client):
     assert draft.settled_at - streaming.time.monotonic() <= streaming.SETTLE_MAX_SECONDS
 
 
-async def test_delivered_text_different_from_stream_is_sent_again(client):
+async def test_delivered_text_different_from_stream_is_recalled_then_sent_again(client):
     session = _session()
     await _event(session, "content_start", stream_id="s1")
     await _event(session, "content_token", stream_id="s1", token="草稿。")
@@ -191,6 +199,7 @@ async def test_delivered_text_different_from_stream_is_sent_again(client):
 
     assert await PORT.deliver(session, CONVERSATION, _encoded("完全不同的正式回复。"), "i1", stream_id="s1") == "msg-1"
     assert len(client.sent) == 1
+    assert client.recalled == [({"kind": "c2c", "id": "u1"}, "stream-1")]
 
 
 async def test_group_and_thought_streams_are_ignored(client):
@@ -201,7 +210,7 @@ async def test_group_and_thought_streams_are_ignored(client):
     assert len(streaming.c2c_streams) == 0
 
 
-async def test_history_sync_closes_discarded_draft_with_shown_text(client):
+async def test_history_sync_recalls_discarded_draft(client):
     session = _session()
     await _event(session, "content_start", stream_id="s1")
     await _event(session, "content_token", stream_id="s1", token="草稿内容。")
@@ -211,6 +220,7 @@ async def test_history_sync_closes_discarded_draft_with_shown_text(client):
 
     assert client.frames[-1]["state"] == streaming.STATE_DONE
     assert client.frames[-1]["content"] == "草稿内容。"
+    assert client.recalled == [({"kind": "c2c", "id": "u1"}, "stream-1")]
     assert len(streaming.c2c_streams) == 0
 
 
@@ -316,3 +326,90 @@ async def test_shown_counts_live_drafts_only(client):
     assert not PORT.stream_drafts_shown(session, ["other"])
     await _event(session, "history_sync")
     assert not PORT.stream_drafts_shown(session)
+
+
+async def test_failed_recall_blocks_replacement_and_retains_id(client):
+    session = _session()
+    await _event(session, "content_start", stream_id="s1")
+    await _event(session, "content_token", stream_id="s1", token="原来的回复。")
+    await _event(session, "content_end", stream_id="s1")
+    draft = streaming.c2c_streams.get(session.session_id, "s1")
+    await draft.finished.wait()
+    client.fail_recall = True
+    with pytest.raises(RecallRefused):
+        await _event(session, "history_sync")
+    assert streaming.c2c_streams.get(session.session_id, "s1") is draft
+    assert PORT.stream_drafts_shown(session)
+    streaming.c2c_streams._forget((session.session_id, "s1"), (client.account_id, "u1"), draft)
+    assert streaming.c2c_streams.get(session.session_id, "s1") is draft
+    with pytest.raises(RecallRefused):
+        await _event(session, "content_start", stream_id="s2")
+    with pytest.raises(RecallRefused):
+        await PORT.deliver(session, CONVERSATION, _encoded("新回复"), "i2")
+    assert client.sent == [] and client.stream_count == 1
+    client.fail_recall = False
+    await _event(session, "history_sync")
+    assert len(streaming.c2c_streams) == 0
+
+
+async def test_changed_final_text_is_not_resent_when_recall_fails(client):
+    session = _session()
+    await _event(session, "content_start", stream_id="s1")
+    await _event(session, "content_token", stream_id="s1", token="原来的回复。")
+    await _event(session, "content_end", stream_id="s1")
+    client.fail_recall = True
+    with pytest.raises(RecallRefused):
+        await PORT.deliver(session, CONVERSATION, _encoded("改过的回复"), "i1", stream_id="s1")
+    assert client.sent == []
+    assert streaming.c2c_streams.get(session.session_id, "s1") is not None
+
+
+async def test_recall_waits_for_inflight_first_frame_and_stops_queued_stream(client):
+    session = _session()
+    started, release = asyncio.Event(), asyncio.Event()
+    original = client.send_c2c_stream_frame
+    async def delayed(openid, **frame):
+        started.set()
+        await release.wait()
+        return await original(openid, **frame)
+    client.send_c2c_stream_frame = delayed
+    await _event(session, "content_start", stream_id="s1")
+    await _event(session, "content_token", stream_id="s1", token="第一条。")
+    await _event(session, "content_end", stream_id="s1")
+    await started.wait()
+    await _event(session, "content_start", stream_id="s2")
+    await _event(session, "content_token", stream_id="s2", token="第二条。")
+    await _event(session, "content_end", stream_id="s2")
+    resetting = asyncio.create_task(_event(session, "history_sync"))
+    await asyncio.sleep(0)
+    assert not resetting.done() and client.recalled == []
+    release.set()
+    await resetting
+    assert client.stream_count == 1
+    assert client.recalled == [({"kind": "c2c", "id": "u1"}, "stream-1")]
+    assert len(streaming.c2c_streams) == 0
+
+
+async def test_concurrent_resets_recall_once_and_block_new_streams(client):
+    session = _session()
+    await _event(session, "content_start", stream_id="s1")
+    await _event(session, "content_token", stream_id="s1", token="原来的回复。")
+    await _event(session, "content_end", stream_id="s1")
+    draft = streaming.c2c_streams.get(session.session_id, "s1")
+    await draft.finished.wait()
+    started, release = asyncio.Event(), asyncio.Event()
+    original = client.recall_message
+    async def delayed(target, message_id):
+        started.set()
+        await release.wait()
+        return await original(target, message_id)
+    client.recall_message = delayed
+    first = asyncio.create_task(_event(session, "history_sync"))
+    second = asyncio.create_task(_event(session, "history_sync"))
+    await started.wait()
+    with pytest.raises(RecallRefused):
+        await _event(session, "content_start", stream_id="s2")
+    release.set()
+    await asyncio.gather(first, second)
+    assert len(client.recalled) == 1
+    assert len(streaming.c2c_streams) == 0

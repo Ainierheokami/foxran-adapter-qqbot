@@ -20,8 +20,8 @@ when another message arrives, leaving the earlier one looking cut off until the
 chat is reopened. So what follows a stream (the next stream, or the reply's
 media) waits until the client has had time to type out what was last sent.
 
-A draft Foxran discards (``history_sync`` after a failed validation) cannot be
-recalled from QQ; it is closed with what it already shows.
+A discarded draft is stopped, then recalled using its platform message id.
+Replacement waits for recall success; refusal stops delivery to avoid duplicates.
 """
 
 from __future__ import annotations
@@ -34,6 +34,7 @@ from typing import Any
 from app.adapters.qqbot.adapter import outgoing_parts
 from app.adapters.qqbot.client import QQBotAPIError, QQBotClient, _v2_parts
 from app.logger import setup_logger
+from app.outbound import RecallRefused
 
 logger = setup_logger(__name__)
 
@@ -173,6 +174,8 @@ class C2CStreamDraft:
         self.index = 0
         self.ended = False
         self.abandoned = False
+        self.recalled = False
+        self._recall_lock = asyncio.Lock()
         self.failed = False
         self.finished = asyncio.Event()
         # When the client will have typed out everything sent so far.
@@ -203,9 +206,30 @@ class C2CStreamDraft:
         self._wake.set()
 
     def abandon(self) -> None:
-        """Foxran discarded this draft: QQ cannot recall it, so it closes as shown."""
+        """Stop generating new text; recall is awaited separately."""
         self.abandoned = True
         self._wake.set()
+
+    async def discard_and_recall(self) -> None:
+        """Stop even an in-flight first frame before deciding what to recall."""
+        self.abandon()
+        async with self._recall_lock:
+            await self._recall_stopped_draft()
+
+    async def _recall_stopped_draft(self) -> None:
+        if self._task is not None:
+            try:
+                await asyncio.wait_for(asyncio.shield(self._task), timeout=FINALIZE_WAIT_SECONDS)
+            except asyncio.TimeoutError as exc:
+                raise RecallRefused("QQ 流式消息尚未停止，取消重发以免重复") from exc
+        if not self.stream_msg_id or self.recalled:
+            return
+        try:
+            await self.client.recall_message({"kind": "c2c", "id": self.openid}, self.stream_msg_id)
+        except Exception as exc:
+            raise RecallRefused(f"QQ 流式消息撤回失败，取消重发: {exc}") from exc
+        self.recalled = True
+        logger.info("QQ Bot 流式草稿已撤回: platform_message_id=%s", self.stream_msg_id)
 
     async def _sleep(self, seconds: float) -> None:
         try:
@@ -216,9 +240,13 @@ class C2CStreamDraft:
 
     async def _run(self) -> None:
         try:
+            if self.abandoned:
+                return
             if self.previous is not None:
                 # QQ shows one stream at a time: wait for the previous message.
                 await self.previous.finished.wait()
+                if self.abandoned:
+                    return
                 await self.previous.wait_settled()
                 self.previous = None
             deadline = time.monotonic() + DRAFT_TIMEOUT_SECONDS
@@ -227,7 +255,7 @@ class C2CStreamDraft:
             while True:
                 if self.abandoned:
                     if self.opened:
-                        logger.info("QQ Bot 流式草稿被作废（模型重试），已显示的 %d 字保留", len(self.sent))
+                        logger.info("QQ Bot 流式草稿停止生成，等待撤回: shown_chars=%d", len(self.sent))
                     await self._finish(self.sent)
                     return
                 if self.ended:
@@ -346,15 +374,17 @@ class C2CStreamDraft:
             # Still queued behind a message that never finished: send this one
             # normally and make sure the draft never shows up later.
             logger.warning("QQ Bot 流式草稿 %ss 内未完成，改为整条发送", int(FINALIZE_WAIT_SECONDS))
-            self.abandon()
+            await self.discard_and_recall()
             return None
         if self.done_text is None:
+            await self.discard_and_recall()
             return None
         if not same_text(self.done_text, text):
             logger.warning(
-                "QQ Bot 流式内容与正式回复不一致，整条补发：shown=%r final=%r",
+                "QQ Bot 流式内容与正式回复不一致，撤回后重发：shown=%r final=%r",
                 self.done_text[:80], text[:80],
             )
+            await self.discard_and_recall()
             return None
         return self.stream_msg_id
 
@@ -366,15 +396,17 @@ class C2CStreamRegistry:
         self._drafts: dict[tuple[str, str], C2CStreamDraft] = {}
         # Latest draft per (account, user): the next one waits for it.
         self._latest: dict[tuple[str, str], C2CStreamDraft] = {}
+        self._discarding: dict[str, int] = {}
 
     def __len__(self) -> int:
         return len(self._drafts)
 
     def create(self, session_id: str, stream_id: str, client: QQBotClient, openid: str, msg_id: str, interval: float) -> C2CStreamDraft:
+        self.assert_delivery_allowed(session_id, msg_id)
         key = (session_id, stream_id)
         previous_same_id = self._drafts.get(key)
         if previous_same_id is not None:
-            previous_same_id.abandon()
+            return previous_same_id
         channel = (client.account_id, openid)
         latest = self._latest.get(channel)
         draft = C2CStreamDraft(
@@ -393,6 +425,9 @@ class C2CStreamRegistry:
         return draft
 
     def _forget(self, key: tuple[str, str], channel: tuple[str, str], draft: C2CStreamDraft) -> None:
+        # A failed recall must keep its id and duplicate-delivery guard.
+        if draft.abandoned and draft.opened and not draft.recalled:
+            return
         if self._drafts.get(key) is draft:
             self._drafts.pop(key, None)
         if self._latest.get(channel) is draft:
@@ -412,10 +447,45 @@ class C2CStreamRegistry:
         """
         wanted = None if stream_ids is None else {str(value) for value in stream_ids}
         return any(
-            not draft.abandoned and not (draft.failed and not draft.opened)
+            not draft.recalled and (draft.opened or (not draft.abandoned and not draft.failed))
             for (sid, stream_id), draft in self._drafts.items()
             if sid == session_id and (wanted is None or stream_id in wanted)
         )
+
+    def assert_delivery_allowed(self, session_id: str, msg_id: str) -> None:
+        if self._discarding.get(session_id) or any(
+            sid == session_id and draft.msg_id == msg_id
+            and draft.abandoned and not draft.recalled
+            and (draft.opened or not draft.finished.is_set())
+            for (sid, _), draft in self._drafts.items()
+        ):
+            raise RecallRefused("QQ 旧草稿尚未确认撤回，拒绝重复发送本轮回复")
+
+    async def discard_session(self, session_id: str) -> None:
+        self._discarding[session_id] = self._discarding.get(session_id, 0) + 1
+        try:
+            await self._discard_session(session_id)
+        finally:
+            self._discarding[session_id] -= 1
+            if not self._discarding[session_id]:
+                self._discarding.pop(session_id)
+
+    async def _discard_session(self, session_id: str) -> None:
+        entries = [(key, draft) for key, draft in self._drafts.items() if key[0] == session_id]
+        # Stop all queued messages before awaiting any in-flight operation.
+        for _, draft in entries:
+            draft.abandon()
+        results = await asyncio.gather(
+            *(draft.discard_and_recall() for _, draft in entries), return_exceptions=True
+        )
+        failures = []
+        for (key, draft), result in zip(entries, results):
+            if isinstance(result, BaseException):
+                failures.append(result)
+            elif self._drafts.get(key) is draft:
+                self._drafts.pop(key, None)
+        if failures:
+            raise RecallRefused(f"QQ 草稿替换中止，{len(failures)} 条消息未能确认撤回: {failures[0]}")
 
     def pop_session(self, session_id: str) -> list[C2CStreamDraft]:
         keys = [key for key in self._drafts if key[0] == session_id]
@@ -424,6 +494,7 @@ class C2CStreamRegistry:
     def clear(self) -> None:
         self._drafts.clear()
         self._latest.clear()
+        self._discarding.clear()
 
 
 c2c_streams = C2CStreamRegistry()
