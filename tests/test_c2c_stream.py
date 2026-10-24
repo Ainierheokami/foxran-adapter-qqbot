@@ -413,3 +413,32 @@ async def test_concurrent_resets_recall_once_and_block_new_streams(client):
     await asyncio.gather(first, second)
     assert len(client.recalled) == 1
     assert len(streaming.c2c_streams) == 0
+
+
+async def test_inflight_timeout_blocks_resend_until_recall_can_finish(client, monkeypatch):
+    session = _session()
+    started, release = asyncio.Event(), asyncio.Event()
+    original = client.send_c2c_stream_frame
+    async def delayed(openid, **frame):
+        started.set()
+        await release.wait()
+        return await original(openid, **frame)
+    client.send_c2c_stream_frame = delayed
+    monkeypatch.setattr(streaming, "FINALIZE_WAIT_SECONDS", 0.01)
+    await _event(session, "content_start", stream_id="s1")
+    await _event(session, "content_token", stream_id="s1", token="原来的回复。")
+    await _event(session, "content_end", stream_id="s1")
+    await started.wait()
+    draft = streaming.c2c_streams.get(session.session_id, "s1")
+    try:
+        with pytest.raises(RecallRefused):
+            await _event(session, "history_sync")
+        assert not draft._task.cancelled()
+        with pytest.raises(RecallRefused):
+            await PORT.deliver(session, CONVERSATION, _encoded("新回复"), "i2")
+        assert client.sent == []
+    finally:
+        release.set()
+        await draft.finished.wait()
+        await _event(session, "history_sync")
+    assert len(client.recalled) == 1
