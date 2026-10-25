@@ -104,6 +104,14 @@ async def event_is_mention(
         return False
 
 
+def _current_session(session: Any) -> str:
+    """Session id, after dropping unrecallable drafts of earlier user messages."""
+    session_id = str(getattr(session, "session_id", "") or "")
+    state = getattr(session, "platform_state", None) or {}
+    c2c_streams.release_failed_recalls(session_id, str(state.get("qqbot_msg_id") or ""))
+    return session_id
+
+
 class QQBotBinding:
     """How the framework pipeline reaches back into QQBot for one event."""
 
@@ -146,10 +154,10 @@ class QQBotOutboundPort:
 
     def stream_drafts_shown(self, session: Any, stream_ids: Any = None) -> bool:
         """A shown draft counts as sent until an explicit recall succeeds."""
-        return c2c_streams.shown(str(getattr(session, "session_id", "") or ""), stream_ids)
+        return c2c_streams.shown(_current_session(session), stream_ids)
 
     async def discard_stream_drafts(self, session: Any, conversation: Any) -> None:
-        await c2c_streams.discard_session(str(getattr(session, "session_id", "") or ""))
+        await c2c_streams.discard_session(_current_session(session))
 
     async def on_stream_event(self, session: Any, conversation: Any, event: dict[str, Any]) -> None:
         """Render Foxran's streamed reply drafts as QQ C2C stream messages."""
@@ -192,7 +200,7 @@ class QQBotOutboundPort:
     ) -> Optional[str]:
         target = session.platform_state.get("qqbot_target")
         msg_id = session.platform_state.get("qqbot_msg_id")
-        session_id = str(getattr(session, "session_id", "") or "")
+        session_id = _current_session(session)
         c2c_streams.assert_delivery_allowed(session_id, str(msg_id or ""))
         draft = c2c_streams.get(session_id, stream_id) if stream_id else None
         if not message.text:

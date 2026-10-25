@@ -175,6 +175,8 @@ class C2CStreamDraft:
         self.ended = False
         self.abandoned = False
         self.recalled = False
+        # QQ answered the recall with an error (e.g. past the recall window).
+        self.recall_failed = False
         self._recall_lock = asyncio.Lock()
         self.failed = False
         self.finished = asyncio.Event()
@@ -227,6 +229,7 @@ class C2CStreamDraft:
         try:
             await self.client.recall_message({"kind": "c2c", "id": self.openid}, self.stream_msg_id)
         except Exception as exc:
+            self.recall_failed = True
             raise RecallRefused(f"QQ 流式消息撤回失败，取消重发: {exc}") from exc
         self.recalled = True
         logger.info("QQ Bot 流式草稿已撤回: platform_message_id=%s", self.stream_msg_id)
@@ -486,6 +489,20 @@ class C2CStreamRegistry:
                 self._drafts.pop(key, None)
         if failures:
             raise RecallRefused(f"QQ 草稿替换中止，{len(failures)} 条消息未能确认撤回: {failures[0]}")
+
+    def release_failed_recalls(self, session_id: str, msg_id: str) -> None:
+        """Let go of drafts QQ refused to recall once the user has moved on.
+
+        The duplicate guard only matters for the reply to that message; kept
+        longer, every later reset would retry a recall QQ keeps refusing.
+        """
+        for key, draft in list(self._drafts.items()):
+            if key[0] == session_id and draft.recall_failed and draft.msg_id != msg_id:
+                logger.info("QQ Bot 放下撤回失败的旧草稿: platform_message_id=%s", draft.stream_msg_id)
+                self._drafts.pop(key, None)
+                for channel, latest in list(self._latest.items()):
+                    if latest is draft:
+                        self._latest.pop(channel, None)
 
     def pop_session(self, session_id: str) -> list[C2CStreamDraft]:
         keys = [key for key in self._drafts if key[0] == session_id]

@@ -442,3 +442,36 @@ async def test_inflight_timeout_blocks_resend_until_recall_can_finish(client, mo
         await draft.finished.wait()
         await _event(session, "history_sync")
     assert len(client.recalled) == 1
+
+
+async def test_unrecallable_draft_is_released_once_the_user_moves_on(client):
+    session = _session()
+    await _event(session, "content_start", stream_id="s1")
+    await _event(session, "content_token", stream_id="s1", token="原来的回复。")
+    await _event(session, "content_end", stream_id="s1")
+    await streaming.c2c_streams.get(session.session_id, "s1").finished.wait()
+    client.fail_recall = True
+    with pytest.raises(RecallRefused):
+        await _event(session, "history_sync")
+    assert PORT.stream_drafts_shown(session)
+
+    # The next user message: s1 is past QQ's recall window and stays refused.
+    session.platform_state["qqbot_msg_id"] = "m2"
+    original = client.recall_message
+    async def refuse_old(target, message_id):
+        if message_id == "stream-1":
+            raise QQBotAPIError("撤回失败 40054005: 超过可撤回时间")
+        return await original(target, message_id)
+    client.fail_recall = False
+    client.recall_message = refuse_old
+    assert not PORT.stream_drafts_shown(session)
+    await _event(session, "content_start", stream_id="s2")
+    await _event(session, "content_token", stream_id="s2", token="新一轮草稿。")
+    await _event(session, "content_end", stream_id="s2")
+    await streaming.c2c_streams.get(session.session_id, "s2").finished.wait()
+
+    # A retry in the new turn recalls only its own draft and may replace it.
+    await _event(session, "history_sync")
+    assert client.recalled == [({"kind": "c2c", "id": "u1"}, "stream-2")]
+    assert len(streaming.c2c_streams) == 0
+    assert await PORT.deliver(session, CONVERSATION, _encoded("新回复"), "i2") == "msg-1"
