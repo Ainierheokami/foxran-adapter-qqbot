@@ -28,3 +28,25 @@ def test_file_attachment_keeps_name_and_size():
 
     seg = chain.segments[0]
     assert (seg.name, seg.size, seg.media.url) == ("a.7z", 2048, "https://q/f")
+
+
+def test_attachment_placeholder_in_content_becomes_the_attachment():
+    """QQ puts <attachmentType=...> in the text where the picture was; it is not text."""
+    chain = QQBotAdapter().from_platform_format({
+        "content": '看这个<attachmentType="image/jpeg",attachmentIndex=0,description="eyJ0ZXh0IjoiW+WbvueJh10ifQ==">好笑',
+        "attachments": [{"content_type": "image/jpeg", "url": "https://q/a", "filename": "A.jpg"}],
+    })
+
+    assert [type(seg).__name__ for seg in chain.segments] == ["Text", "Image", "Text"]
+    assert [seg.text for seg in chain.segments if hasattr(seg, "text")] == ["看这个", "好笑"]
+    assert chain.segments[1].media.url == "https://q/a"
+
+
+def test_placeholder_without_matching_attachment_is_dropped_and_extras_appended():
+    chain = QQBotAdapter().from_platform_format({
+        "content": '<attachmentType="image/jpeg",attachmentIndex=3,description="x">',
+        "attachments": [{"content_type": "image/png", "url": "https://q/b"}],
+    })
+
+    assert [type(seg).__name__ for seg in chain.segments] == ["Image"]
+    assert chain.segments[0].media.url == "https://q/b"

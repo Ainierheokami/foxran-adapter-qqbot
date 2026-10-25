@@ -44,3 +44,9 @@ cd web && npm install && npm run build
 $env:FOXRAN_HOST_ROOT="D:\myfoxbot\foxran_agent"
 conda run --no-capture-output -n foxran python -m pytest --confcutdir=tests --rootdir=tests tests --asyncio-mode=auto -q
 ```
+
+## 图片收发（1.8.4）
+
+收到的消息正文里，QQ 会在图片原来的位置写一个附件占位标记（`<attachmentType="image/jpeg",attachmentIndex=0,description="...">`）。现在这个标记会换成对应序号的附件，放回它在原文里的位置，不再作为文字出现在历史和 WebUI 里；正文里没有占位的附件照旧追加在末尾。
+
+发图时，如果图片就在本服务上（例如宿主媒体缓存里生成的图），改为通过本机地址读取内容，用 `file_data` 直接上传给 QQ，不再让 QQ 回头拉公网地址：大图经家宽上行十几秒传不完，QQ 会报「富媒体文件上传超时」。超过 1MB 的图片先压成 JPEG（最长边 2048）。读取失败时仍按原来的方式交给 QQ 拉取地址；视频和语音不变。压缩用宿主环境自带的 Pillow。

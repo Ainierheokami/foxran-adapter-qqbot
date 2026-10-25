@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 from collections import OrderedDict
+from io import BytesIO
 import json
 import re
 import time
@@ -20,6 +22,51 @@ class QQBotAPIError(RuntimeError):
 
 
 _MEDIA_FILE_TYPES = {"image": 1, "video": 2, "voice": 3}
+# 本服务上的图片直接把内容传给 QQ（file_data）：让 QQ 回头拉公网地址时，大图经家宽上行
+# 十来秒传不完，QQ 报「富媒体文件上传超时」。超过这个大小先压成 JPEG。
+_INLINE_IMAGE_MAX_BYTES = 1024 * 1024
+_INLINE_IMAGE_MAX_SIDE = 2048
+_INLINE_IMAGE_QUALITY = 85
+
+
+def _local_fetch_url(url: str) -> str | None:
+    """本服务公网地址换成本机地址，读取不绕公网；不是本服务的地址返回 None。"""
+    try:
+        from app.config.web_api_config import get_internal_base_url, get_public_base_url
+        from app.media.cache_store import is_self_hosted_url
+    except Exception:
+        return None
+    if not is_self_hosted_url(url):
+        return None
+    public = get_public_base_url().rstrip("/")
+    if public and url.startswith(public + "/"):
+        return get_internal_base_url().rstrip("/") + url[len(public):]
+    return url
+
+
+def _shrink_image(content: bytes) -> bytes:
+    if len(content) <= _INLINE_IMAGE_MAX_BYTES:
+        return content
+    from PIL import Image
+
+    with Image.open(BytesIO(content)) as image:
+        image.thumbnail((_INLINE_IMAGE_MAX_SIDE, _INLINE_IMAGE_MAX_SIDE))
+        if image.mode in ("RGBA", "LA", "P"):
+            image = image.convert("RGBA")
+            background = Image.new("RGB", image.size, (255, 255, 255))
+            background.paste(image, mask=image.getchannel("A"))
+            image = background
+        elif image.mode != "RGB":
+            image = image.convert("RGB")
+        buffer = BytesIO()
+        image.save(buffer, format="JPEG", quality=_INLINE_IMAGE_QUALITY, optimize=True)
+    shrunk = buffer.getvalue()
+    return shrunk if len(shrunk) < len(content) else content
+
+
+def _read_local(url: str) -> bytes:
+    with urlopen(Request(url), timeout=15) as response:
+        return response.read()
 _MARKDOWN_MARKERS = re.compile(
     r"(?m)(?:^\s{0,3}(?:#{1,6}\s+|[-*+]\s+|\d+[.)]\s+|>\s+|```)|"
     r"\*\*[^*\n]+\*\*|__[^_\n]+__|`[^`\n]+`|\[[^\]\n]+\]\([^\s)]+\))"
@@ -173,11 +220,7 @@ class QQBotClient:
             sequence += 1
 
         for media_kind, url in media_items:
-            uploaded = await self.request("POST", file_path, {
-                "file_type": _MEDIA_FILE_TYPES[media_kind],
-                "url": url,
-                "srv_send_msg": False,
-            })
+            uploaded = await self.request("POST", file_path, await self._upload_payload(media_kind, url))
             file_info = uploaded.get("file_info") or (uploaded.get("media") or {}).get("file_info")
             if not file_info:
                 raise QQBotAPIError(f"QQ Bot {media_kind} 上传成功但响应缺少 file_info: {uploaded}")
@@ -193,6 +236,20 @@ class QQBotClient:
             ))
             sequence += 1
         return platform_id
+
+    async def _upload_payload(self, media_kind: str, url: str) -> dict[str, Any]:
+        payload: dict[str, Any] = {"file_type": _MEDIA_FILE_TYPES[media_kind], "srv_send_msg": False}
+        local = _local_fetch_url(url) if media_kind == "image" else None
+        if local:
+            try:
+                content = await asyncio.to_thread(_read_local, local)
+                content = await asyncio.to_thread(_shrink_image, content)
+                payload["file_data"] = base64.b64encode(content).decode("ascii")
+                return payload
+            except Exception as exc:
+                logger.warning("QQ Bot 读取本地图片失败，改让 QQ 拉取地址：%s (%s)", url, exc)
+        payload["url"] = url
+        return payload
 
     async def reserve_c2c_sequence(self, openid: str, msg_id: str) -> int:
         """One msg_seq for a C2C stream: every frame of the stream shares it."""

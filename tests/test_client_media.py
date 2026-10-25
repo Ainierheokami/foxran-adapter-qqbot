@@ -217,3 +217,72 @@ class QQBotMediaSendingTests(unittest.IsolatedAsyncioTestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class QQBotLocalImageUploadTests(unittest.IsolatedAsyncioTestCase):
+    """Production 2026-10-25: a 3.67MB PNG on our own cache URL timed out while QQ pulled it."""
+
+    def setUp(self):
+        self._saved = (client_module._local_fetch_url, client_module._read_local)
+
+    def tearDown(self):
+        client_module._local_fetch_url, client_module._read_local = self._saved
+
+    @staticmethod
+    def _big_png() -> bytes:
+        import os
+        from io import BytesIO
+        from PIL import Image
+
+        image = Image.frombytes("RGB", (1200, 1600), os.urandom(1200 * 1600 * 3))
+        buffer = BytesIO()
+        image.save(buffer, format="PNG")
+        return buffer.getvalue()
+
+    async def test_own_cached_image_is_sent_as_shrunk_file_data(self):
+        import base64
+        from io import BytesIO
+        from PIL import Image
+
+        png = self._big_png()
+        self.assertGreater(len(png), client_module._INLINE_IMAGE_MAX_BYTES)
+        client_module._local_fetch_url = lambda url: "http://127.0.0.1:8000/api/media/cache/X"
+        client_module._read_local = lambda url: png
+        client = RecordingClient()
+
+        await client.send_message(
+            {"kind": "group", "id": "group-1"},
+            [("image", "https://api.example.test/api/media/cache/X")],
+            "source-message",
+        )
+
+        upload = client.calls[0][2]
+        self.assertNotIn("url", upload)
+        data = base64.b64decode(upload["file_data"])
+        self.assertLess(len(data), len(png))
+        with Image.open(BytesIO(data)) as sent:
+            self.assertEqual(sent.format, "JPEG")
+
+    async def test_foreign_image_url_is_still_pulled_by_qq(self):
+        client_module._local_fetch_url = lambda url: None
+        client = RecordingClient()
+
+        await client.send_message(
+            {"kind": "group", "id": "group-1"}, [("image", "https://example.com/a.jpg")], "source-message"
+        )
+
+        self.assertEqual(client.calls[0][2], {"file_type": 1, "srv_send_msg": False, "url": "https://example.com/a.jpg"})
+
+    async def test_unreadable_local_image_falls_back_to_url(self):
+        def fail(_url):
+            raise OSError("down")
+
+        client_module._local_fetch_url = lambda url: "http://127.0.0.1:8000/x"
+        client_module._read_local = fail
+        client = RecordingClient()
+
+        await client.send_message(
+            {"kind": "group", "id": "group-1"}, [("image", "https://api.example.test/x")], "source-message"
+        )
+
+        self.assertEqual(client.calls[0][2]["url"], "https://api.example.test/x")

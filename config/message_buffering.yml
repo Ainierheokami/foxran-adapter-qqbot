@@ -1,0 +1,18 @@
+# =================== 消息缓冲与合并配置 (Message Buffering Config) ===================
+enabled: true                # 是否启用消息缓冲池机制 (把连续的小段分发消息合并成一条处理)
+max_pending_messages: 5      # 队列中最大积累的消息数量，达到后立刻强制触发处理
+message_wait_seconds: 2.0    # 等对方停下来的时间 (秒)：每来一条重新计时，这么久没有新消息就开始处理；更晚的补充等回复发出后再接
+batch_processing_timeout: 30 # 批量处理的最长超时时间 (秒)
+max_wait_time: 15            # 从第一条消息开始算起的绝对最大等待时间 (秒)
+priority_keywords:           # 包含以下关键词的消息将忽略等待时间，立即触发优先处理
+  - 紧急
+  - urgent
+  - emergency
+  - 帮助
+  - help
+debug_mode: false            # 是否开启详细的缓冲池日志输出
+auto_backup: true            # 是否自动备份配置文件的修改记录
+reload_interval: 0           # 配置文件自动重载的扫描间隔 (秒)，0 表示禁用
+validation_mode: "strict"    # 消息合法性验证模式: strict (严格校验) / lenient (宽松校验)
+concurrent_sessions: 50      # 并发处理的最大会话数限制 (防止瞬时流量打爆)
+memory_threshold: 100        # 大规模消息累积时的内存使用安全阈值 (超标则强制清仓)

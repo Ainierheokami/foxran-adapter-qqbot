@@ -41,6 +41,9 @@ MENTION_PATTERN = re.compile(
 # QQ 小黄脸：<faceType=1,faceId="13",ext="base64">，ext 解出来是 {"text":"[呲牙]"}
 FACE_PATTERN = re.compile(r'<faceType=\d+,faceId="(?P<face_id>[^"]*)"(?:,ext="(?P<ext>[^"]*)")?\s*/?>')
 _INBOUND_MARKUP = re.compile(f"{MENTION_PATTERN.pattern}|{FACE_PATTERN.pattern}")
+# 附件在正文里的占位：<attachmentType="image/jpeg",attachmentIndex=0,description="base64">，
+# description 解出来是 {"text":"[图片]"}；附件本身在 attachments 里，按序号对应。
+ATTACHMENT_PATTERN = re.compile(r'<attachmentType="[^"]*",attachmentIndex=(?P<index>\d+)(?:,[^>]*)?\s*/?>')
 
 
 def mention_target(match: re.Match) -> str:
@@ -242,9 +245,28 @@ class QQBotAdapter(BasePlatformAdapter):
         else:
             content, attachments = str(platform_data or ""), []
         names = mention_names(platform_data) if isinstance(platform_data, dict) else {}
-        result = MessageChain(split_mentions(content, names) if content else [])
-        for attachment in attachments:
-            if isinstance(attachment, dict) and (segment := attachment_segment(attachment)) is not None:
+        segments = [
+            attachment_segment(item) if isinstance(item, dict) else None
+            for item in attachments
+        ]
+        placed: set[int] = set()
+        pieces: list[Segment | str] = []
+        for piece in split_mentions(content, names) if content else []:
+            if not isinstance(piece, str):
+                pieces.append(piece)
+                continue
+            position = 0
+            for match in ATTACHMENT_PATTERN.finditer(piece):
+                pieces.append(piece[position:match.start()])
+                index = int(match.group("index"))
+                if index < len(segments) and segments[index] is not None and index not in placed:
+                    pieces.append(segments[index])
+                    placed.add(index)
+                position = match.end()
+            pieces.append(piece[position:])
+        result = MessageChain([piece for piece in pieces if not isinstance(piece, str) or piece])
+        for index, segment in enumerate(segments):
+            if segment is not None and index not in placed:
                 result.append(segment)
         return result
 

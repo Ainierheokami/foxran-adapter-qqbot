@@ -1,0 +1,13 @@
+# =================== Web API 与 前端通信鉴权 ===================
+# 用于系统内置的 Dashboard WebUI 与后端 API 通信的安全控制。
+
+auth:
+  token: "qR11-Htut-swU9cpBNvyLSPHh7Gd-dtU"  # Web API 的全局鉴权 Bearer Token，如果保持为 'change_me'，系统在启动时将自动重新生成一串安全的随机内容。
+  basic:              # Basic 认证 (作为补充可选项目)
+    enabled: false    # 是否开启 Basic Auth
+    username: "admin" # Basic Username
+    password: "admin" # Basic Password
+  verbose_errors: true  # 是否在 API 返回体中附带详细的报错堆栈信息，对于排障很有帮助
+
+logging:
+  auth_debug: true    # 是否记录鉴权过程的 Debug 级日志信息（注：不会明文打印敏感 Token 密钥）
