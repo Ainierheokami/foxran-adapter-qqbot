@@ -7,7 +7,7 @@ from typing import Any
 from fastapi import APIRouter, Depends, HTTPException, Request
 
 from app.adapters.qqbot.config import qqbot_config
-from app.adapters.qqbot.handlers import handle_event
+from app.adapters.qqbot.handlers import dispatch_event
 from app.adapters.qqbot.client import qqbot_clients
 from app.api.endpoints.auth import require_auth
 
@@ -108,7 +108,7 @@ async def _qqbot_webhook(request: Request, account_id: str):
             raise HTTPException(status_code=400, detail="invalid callback validation payload")
         return {"plain_token": plain_token, "signature": validation_signature(secret, event_ts, plain_token)}
     if op == 0:
-        await handle_event(
+        await dispatch_event(
             str(payload.get("t") or ""), data, payload.get("id"),
             account_id=account_id, client=qqbot_clients.get(account_id),
         )

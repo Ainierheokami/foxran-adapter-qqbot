@@ -9,7 +9,7 @@ import websockets
 
 from app.adapters.qqbot.client import QQBotClient, qqbot_clients
 from app.adapters.qqbot.config import qqbot_config
-from app.adapters.qqbot.handlers import handle_event
+from app.adapters.qqbot.handlers import dispatch_event
 from app.logger import setup_logger
 
 logger = setup_logger(__name__)
@@ -103,7 +103,7 @@ class QQBotGateway:
                     if payload.get("op") == 0:
                         event_type = str(payload.get("t") or "")
                         logger.debug("QQ Bot Gateway 收到事件：type=%s id=%s seq=%s", event_type, payload.get("id"), self._seq)
-                        await handle_event(event_type, payload.get("d") or {}, payload.get("id"), account_id=self.account_id, client=self.client)
+                        await dispatch_event(event_type, payload.get("d") or {}, payload.get("id"), account_id=self.account_id, client=self.client)
                     if payload.get("op") == 7:
                         logger.info("QQ Bot Gateway 要求重新连接")
                         return

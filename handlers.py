@@ -313,3 +313,42 @@ async def handle_event(
         ))
     except Exception:
         logger.exception("处理 QQ Bot 事件失败 type=%s", event_type)
+
+
+try:
+    from app.inbound.dispatch import OrderedDispatcher
+
+    _dispatcher: Optional[OrderedDispatcher] = OrderedDispatcher("QQ Bot")
+except ImportError:  # 宿主低于 4.8.43：退回逐个处理
+    _dispatcher = None
+
+
+def _event_key(event_type: str, data: Any, account_id: str) -> str:
+    try:
+        target, _, _, _ = target_for_event(event_type, data)
+        return f"{account_id}:{target['kind']}:{target['id']}"
+    except Exception:
+        return f"{account_id}:other"
+
+
+async def dispatch_event(
+    event_type: str,
+    data: dict[str, Any],
+    event_id: Any = None,
+    *,
+    account_id: str = "default",
+    client: QQBotClient | None = None,
+) -> None:
+    """Hand the event off so the gateway keeps reading (and the webhook ACKs at once).
+
+    Events of one conversation still run in order; a long command in one group
+    no longer holds up every other conversation of the account.
+    """
+    if _dispatcher is None or event_type not in MESSAGE_EVENTS or not isinstance(data, dict):
+        await handle_event(event_type, data, event_id, account_id=account_id, client=client)
+        return
+    _dispatcher.submit(
+        _event_key(event_type, data, account_id),
+        lambda: handle_event(event_type, data, event_id, account_id=account_id, client=client),
+    )
+
