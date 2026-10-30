@@ -229,8 +229,9 @@ class QQBotOutboundPort:
             logger.info("QQ Bot 正在发送回复：target=%s msg_id=%s content=%s", target.get("id"), msg_id, message.text[:200])
             platform_id = await client.send_message(target, parts, str(draft.msg_id if draft is not None else msg_id))
         except QQBotAPIError as exc:
+            # 抛给宿主：它会把这句标成没发出去，她下一轮才知道对方没看到
             logger.error("QQ Bot 回复失败: %s", exc)
-            return None
+            raise
         logger.info("QQ Bot 回复发送成功：target=%s platform_message_id=%s", target.get("id"), platform_id)
         return platform_id
 

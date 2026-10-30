@@ -263,6 +263,47 @@ class QQBotLocalImageUploadTests(unittest.IsolatedAsyncioTestCase):
         with Image.open(BytesIO(data)) as sent:
             self.assertEqual(sent.format, "JPEG")
 
+    async def test_webp_sticker_is_converted_before_upload(self):
+        """2026-10-30：本服务上的 webp 表情包原样上传，QQ 回「富媒体文件格式不支持」。"""
+        import base64
+        from io import BytesIO
+        from PIL import Image
+
+        def webp(frames):
+            buffer = BytesIO()
+            images = [Image.new("RGBA", (64, 64), (255, 0, 0, 255)), Image.new("RGBA", (64, 64), (0, 0, 255, 255))]
+            images[0].save(buffer, format="WEBP", save_all=frames > 1, append_images=images[1:frames], duration=80)
+            return buffer.getvalue()
+
+        client_module._local_fetch_url = lambda url: url
+        for frames, expected in ((1, "PNG"), (2, "GIF")):
+            client_module._read_local = lambda url, data=webp(frames): data
+            client = RecordingClient()
+            await client.send_message(
+                {"kind": "group", "id": "group-1"}, [("image", "https://api.example.test/api/stickers/send/a.webp")], "m"
+            )
+            with Image.open(BytesIO(base64.b64decode(client.calls[0][2]["file_data"]))) as sent:
+                self.assertEqual(sent.format, expected)
+                self.assertEqual(getattr(sent, "n_frames", 1), frames)
+
+    async def test_foreign_webp_is_downloaded_and_converted(self):
+        import base64
+        from io import BytesIO
+        from PIL import Image
+
+        buffer = BytesIO()
+        Image.new("RGB", (8, 8)).save(buffer, format="WEBP")
+        fetched = []
+        client_module._local_fetch_url = lambda url: None
+        client_module._read_local = lambda url: fetched.append(url) or buffer.getvalue()
+        client = RecordingClient()
+
+        await client.send_message({"kind": "group", "id": "group-1"}, [("image", "https://example.com/s.webp?x=1")], "m")
+
+        self.assertEqual(fetched, ["https://example.com/s.webp?x=1"])
+        with Image.open(BytesIO(base64.b64decode(client.calls[0][2]["file_data"]))) as sent:
+            self.assertEqual(sent.format, "PNG")
+
     async def test_foreign_image_url_is_still_pulled_by_qq(self):
         client_module._local_fetch_url = lambda url: None
         client = RecordingClient()

@@ -27,6 +27,9 @@ _MEDIA_FILE_TYPES = {"image": 1, "video": 2, "voice": 3}
 _INLINE_IMAGE_MAX_BYTES = 1024 * 1024
 _INLINE_IMAGE_MAX_SIDE = 2048
 _INLINE_IMAGE_QUALITY = 85
+# QQ 富媒体只收 png / jpg / gif，别的格式（表情包常见的 webp）报「富媒体文件格式不支持」
+_QQ_IMAGE_FORMATS = {"PNG", "JPEG", "GIF"}
+_CONVERT_SUFFIXES = (".webp", ".avif", ".bmp", ".tif", ".tiff", ".heic", ".heif", ".ico")
 
 
 def _local_fetch_url(url: str) -> str | None:
@@ -62,6 +65,28 @@ def _shrink_image(content: bytes) -> bytes:
         image.save(buffer, format="JPEG", quality=_INLINE_IMAGE_QUALITY, optimize=True)
     shrunk = buffer.getvalue()
     return shrunk if len(shrunk) < len(content) else content
+
+
+def _to_supported_image(content: bytes) -> bytes:
+    """QQ 不收的图片格式转成 PNG，动图转 GIF；本来就支持的原样返回。"""
+    from PIL import Image
+
+    with Image.open(BytesIO(content)) as image:
+        if image.format in _QQ_IMAGE_FORMATS:
+            return content
+        buffer = BytesIO()
+        if getattr(image, "n_frames", 1) > 1:
+            image.save(buffer, format="GIF", save_all=True, loop=image.info.get("loop", 0),
+                       duration=image.info.get("duration", 100), disposal=2)
+        else:
+            if image.mode not in ("RGB", "RGBA", "L", "LA", "P"):
+                image = image.convert("RGBA")
+            image.save(buffer, format="PNG", optimize=True)
+    return buffer.getvalue()
+
+
+def _needs_conversion(url: str) -> bool:
+    return url.split("?", 1)[0].split("#", 1)[0].lower().endswith(_CONVERT_SUFFIXES)
 
 
 def _read_local(url: str) -> bytes:
@@ -239,15 +264,17 @@ class QQBotClient:
 
     async def _upload_payload(self, media_kind: str, url: str) -> dict[str, Any]:
         payload: dict[str, Any] = {"file_type": _MEDIA_FILE_TYPES[media_kind], "srv_send_msg": False}
-        local = _local_fetch_url(url) if media_kind == "image" else None
-        if local:
+        # 本服务上的图片直接传内容；别处的图片只有 QQ 不收的格式才先下载转换
+        source = (_local_fetch_url(url) or (url if _needs_conversion(url) else None)) if media_kind == "image" else None
+        if source:
             try:
-                content = await asyncio.to_thread(_read_local, local)
+                content = await asyncio.to_thread(_read_local, source)
+                content = await asyncio.to_thread(_to_supported_image, content)
                 content = await asyncio.to_thread(_shrink_image, content)
                 payload["file_data"] = base64.b64encode(content).decode("ascii")
                 return payload
             except Exception as exc:
-                logger.warning("QQ Bot 读取本地图片失败，改让 QQ 拉取地址：%s (%s)", url, exc)
+                logger.warning("QQ Bot 读取图片失败，改让 QQ 拉取地址：%s (%s)", url, exc)
         payload["url"] = url
         return payload
 
