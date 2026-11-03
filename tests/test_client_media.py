@@ -286,6 +286,35 @@ class QQBotLocalImageUploadTests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(sent.format, expected)
                 self.assertEqual(getattr(sent, "n_frames", 1), frames)
 
+    async def test_a_large_animation_stays_animated(self):
+        """2026-11-03：超过 1MB 的动图（GIF、转出来的 GIF）被压成 JPEG，群里看到的是静图。"""
+        import base64
+        import os
+        from io import BytesIO
+        from PIL import Image
+
+        frames = [Image.frombytes("RGB", (900, 900), os.urandom(900 * 900 * 3)) for _ in range(4)]
+        buffer = BytesIO()
+        frames[0].save(buffer, format="GIF", save_all=True, append_images=frames[1:], duration=[50, 60, 70, 80], loop=0)
+        gif = buffer.getvalue()
+        self.assertGreater(len(gif), client_module._INLINE_ANIMATION_MAX_BYTES)
+
+        client_module._local_fetch_url = lambda url: url
+        client_module._read_local = lambda url: gif
+        client = RecordingClient()
+        await client.send_message({"kind": "group", "id": "group-1"}, [("image", "https://api.example.test/api/media/cache/G")], "m")
+
+        data = base64.b64decode(client.calls[0][2]["file_data"])
+        self.assertLess(len(data), len(gif))
+        with Image.open(BytesIO(data)) as sent:
+            self.assertEqual((sent.format, sent.n_frames), ("GIF", 4))
+            self.assertLess(max(sent.size), 900)
+            durations = []
+            for index in range(sent.n_frames):
+                sent.seek(index)
+                durations.append(sent.info.get("duration"))
+            self.assertEqual(durations, [50, 60, 70, 80])
+
     async def test_foreign_webp_is_downloaded_and_converted(self):
         import base64
         from io import BytesIO

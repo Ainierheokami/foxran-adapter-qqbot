@@ -47,12 +47,74 @@ def _local_fetch_url(url: str) -> str | None:
     return url
 
 
+# 动图不压成 JPEG（会变成静图）：缩小边长重编 GIF，放宽到这个大小。
+_INLINE_ANIMATION_MAX_BYTES = 3 * 1024 * 1024
+_ANIMATION_SIDES = (512, 400, 320, 240, 180)
+
+
+def _is_animated(image: Any) -> bool:
+    return getattr(image, "n_frames", 1) > 1
+
+
+def _encode_gif(image: Any, max_side: int | None = None) -> bytes:
+    """逐帧重编 GIF，保留每帧时长和透明；max_side 给了就等比缩小。"""
+    from PIL import ImageFile
+
+    # 尾巴缺几个字节的 GIF 浏览器照放；Pillow 默认解到最后一帧报错。
+    tolerant, ImageFile.LOAD_TRUNCATED_IMAGES = ImageFile.LOAD_TRUNCATED_IMAGES, True
+    try:
+        return _encode_frames(image, max_side)
+    finally:
+        ImageFile.LOAD_TRUNCATED_IMAGES = tolerant
+
+
+def _encode_frames(image: Any, max_side: int | None) -> bytes:
+    from PIL import Image, ImageSequence
+
+    frames, durations = [], []
+    default_duration = image.info.get("duration") or 100
+    for frame in ImageSequence.Iterator(image):
+        durations.append(frame.info.get("duration") or default_duration)
+        frame = frame.convert("RGBA")
+        if max_side and max(frame.size) > max_side:
+            frame.thumbnail((max_side, max_side), Image.LANCZOS)
+        frames.append(frame)
+    buffer = BytesIO()
+    frames[0].save(
+        buffer, format="GIF", save_all=True, append_images=frames[1:], duration=durations,
+        loop=image.info.get("loop", 0), disposal=2, optimize=True,
+    )
+    return buffer.getvalue()
+
+
+def _shrink_animation(content: bytes, image: Any) -> bytes:
+    if len(content) <= _INLINE_ANIMATION_MAX_BYTES:
+        return content
+    smallest = content
+    for side in _ANIMATION_SIDES:
+        if side >= max(image.size):
+            continue
+        try:
+            smaller = _encode_gif(image, side)
+        except Exception:
+            # 解不开就原样发：动图总比静图好。
+            logger.debug("动图缩小失败，原样发送", exc_info=True)
+            return smallest
+        if len(smaller) < len(smallest):
+            smallest = smaller
+        if len(smaller) <= _INLINE_ANIMATION_MAX_BYTES:
+            break
+    return smallest
+
+
 def _shrink_image(content: bytes) -> bytes:
     if len(content) <= _INLINE_IMAGE_MAX_BYTES:
         return content
     from PIL import Image
 
     with Image.open(BytesIO(content)) as image:
+        if _is_animated(image):
+            return _shrink_animation(content, image)
         image.thumbnail((_INLINE_IMAGE_MAX_SIDE, _INLINE_IMAGE_MAX_SIDE))
         if image.mode in ("RGBA", "LA", "P"):
             image = image.convert("RGBA")
@@ -74,14 +136,16 @@ def _to_supported_image(content: bytes) -> bytes:
     with Image.open(BytesIO(content)) as image:
         if image.format in _QQ_IMAGE_FORMATS:
             return content
+        if _is_animated(image):
+            try:
+                return _encode_gif(image)
+            except Exception:
+                logger.debug("动图转 GIF 失败，改发第一帧", exc_info=True)
+                image.seek(0)
         buffer = BytesIO()
-        if getattr(image, "n_frames", 1) > 1:
-            image.save(buffer, format="GIF", save_all=True, loop=image.info.get("loop", 0),
-                       duration=image.info.get("duration", 100), disposal=2)
-        else:
-            if image.mode not in ("RGB", "RGBA", "L", "LA", "P"):
-                image = image.convert("RGBA")
-            image.save(buffer, format="PNG", optimize=True)
+        if image.mode not in ("RGB", "RGBA", "L", "LA", "P"):
+            image = image.convert("RGBA")
+        image.save(buffer, format="PNG", optimize=True)
     return buffer.getvalue()
 
 
