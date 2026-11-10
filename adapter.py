@@ -279,6 +279,6 @@ class QQBotAdapter(BasePlatformAdapter):
 
     def get_platform_prompts(self, session_ctx: Any) -> str:
         return (
-            "当前通过 QQ 机器人开放平台回复。支持 Markdown；群聊消息必须回复触发消息；支持通过 URL 发送图片、MP4 视频和 SILK 语音，普通文件会降级为链接。"
+            "当前通过 QQ 机器人开放平台回复。支持 Markdown；群聊消息必须回复触发消息，每条触发消息最多回 5 条（超出的发不出去），要说的多就合成几条、别拆成很多短句；支持通过 URL 发送图片、MP4 视频和 SILK 语音，普通文件会降级为链接。"
             "群里要 @ 某人时写 [at,id=对方的 id]（就是消息里的长 ID），不能 @全体；私聊里不用 @。"
         )

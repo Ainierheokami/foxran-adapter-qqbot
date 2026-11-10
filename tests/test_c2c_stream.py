@@ -23,6 +23,9 @@ class _Client:
         self.cfg = {"c2c_stream": True, "markdown_enabled": True, "c2c_stream_interval_ms": 300,
                     "c2c_stream_settle_ms_per_char": 0}
 
+    def replies_left(self, target, msg_id):
+        return 5
+
     def config(self):
         return self.cfg
 

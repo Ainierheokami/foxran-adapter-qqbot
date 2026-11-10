@@ -13,6 +13,8 @@ from app.adapters.qqbot.adapter import (
     remember_name,
     short_name,
 )
+import asyncio
+
 from app.adapters.qqbot.client import QQBotAPIError, QQBotClient, _v2_parts, qqbot_clients
 from app.adapters.qqbot.streaming import c2c_streams, stream_enabled, stream_interval
 from app.inbound import ConversationRef, InboundEvent, PlatformFacts, Sender, SessionIdOptions
@@ -110,6 +112,59 @@ def _current_session(session: Any) -> str:
     state = getattr(session, "platform_state", None) or {}
     c2c_streams.release_failed_recalls(session_id, str(state.get("qqbot_msg_id") or ""))
     return session_id
+
+
+# 最后一个名额等这么久没有新的一句再发
+REPLY_TAIL_QUIET_SECONDS = 0.8
+
+
+class ReplyTails:
+    """一条触发消息的最后一个回复名额：后面的句子攒到一起，合成一条发出去。
+
+    QQ 一条消息最多被动回复 5 条。她一轮常拆成七八句（11-08 群里 1 句进度 + 7 句结论，
+    后 3 句全被拒收 40034128，结论缺了尾巴）。宿主是一句发完才递下一句，所以用到第 5 个
+    名额时先不发、立刻返回，短暂安静后把攒下的几句用换行连成一条。
+    """
+
+    def __init__(self) -> None:
+        self._parts: dict[tuple[str, str, str], list[tuple[str, str]]] = {}
+        self._tasks: dict[tuple[str, str, str], asyncio.Task] = {}
+
+    def pending(self, client: QQBotClient, target: dict[str, str], msg_id: str) -> bool:
+        return (client.account_id, target["id"], msg_id) in self._parts
+
+    def add(self, client: QQBotClient, target: dict[str, str], msg_id: str, parts: list[tuple[str, str]]) -> None:
+        key = (client.account_id, target["id"], msg_id)
+        held = self._parts.setdefault(key, [])
+        if held:
+            held.append(("text", "\n"))
+        held.extend(parts)
+        task = self._tasks.get(key)
+        if task is not None:
+            task.cancel()
+        self._tasks[key] = asyncio.create_task(self._flush_later(key, client, dict(target), msg_id))
+
+    async def _flush_later(self, key: tuple[str, str, str], client: QQBotClient, target: dict[str, str], msg_id: str) -> None:
+        await asyncio.sleep(REPLY_TAIL_QUIET_SECONDS)
+        parts = self._parts.pop(key, [])
+        self._tasks.pop(key, None)
+        if not parts:
+            return
+        try:
+            platform_id = await client.send_message(target, parts, msg_id)
+        except Exception as exc:
+            logger.error("QQ Bot 回复失败（合并发送的最后一条）: %s", exc)
+            return
+        logger.info("QQ Bot 回复发送成功（最后一个名额，合并发送）：target=%s platform_message_id=%s", target.get("id"), platform_id)
+
+    async def wait_idle(self) -> None:
+        """等攒着的都发完（测试用）。"""
+        tasks = list(self._tasks.values())
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
+
+
+reply_tails = ReplyTails()
 
 
 class QQBotBinding:
@@ -226,6 +281,12 @@ class QQBotOutboundPort:
                     # once the client has typed the text out (it would cut it short).
                     await draft.wait_settled()
                     parts = media
+            if draft is None and (
+                reply_tails.pending(client, target, str(msg_id)) or client.replies_left(target, str(msg_id)) == 1
+            ):
+                logger.info("QQ Bot 这条消息只剩最后一个回复名额，攒着合并发送：target=%s content=%s", target.get("id"), message.text[:200])
+                reply_tails.add(client, target, str(msg_id), list(parts))
+                return None
             logger.info("QQ Bot 正在发送回复：target=%s msg_id=%s content=%s", target.get("id"), msg_id, message.text[:200])
             platform_id = await client.send_message(target, parts, str(draft.msg_id if draft is not None else msg_id))
         except QQBotAPIError as exc:

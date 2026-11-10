@@ -161,6 +161,8 @@ _MARKDOWN_MARKERS = re.compile(
     r"\*\*[^*\n]+\*\*|__[^_\n]+__|`[^`\n]+`|\[[^\]\n]+\]\([^\s)]+\))"
 )
 _MAX_REPLY_SEQUENCE_KEYS = 4096
+# QQ 群聊 / 单聊：一条消息最多被动回复 5 条，第 6 条起报 40034128
+PASSIVE_REPLY_LIMIT = 5
 
 
 def _v2_parts(parts: list[tuple[str, str]]) -> tuple[str, list[tuple[str, str]]]:
@@ -375,6 +377,15 @@ class QQBotClient:
         if stream_msg_id:
             payload["stream_msg_id"] = stream_msg_id
         return await self._send_v2_payload(f"/v2/users/{openid}/stream_messages", payload)
+
+    def replies_left(self, target: dict[str, str], msg_id: str) -> int | None:
+        """这条触发消息还能被动回复几条；频道消息不按这个数限制，返回 None。"""
+        paths = {"group": "/v2/groups/{}/messages", "c2c": "/v2/users/{}/messages"}
+        template = paths.get(target.get("kind", ""))
+        if template is None:
+            return None
+        used = self._reply_sequences.get((template.format(target["id"]), msg_id), 1) - 1
+        return max(0, PASSIVE_REPLY_LIMIT - used)
 
     async def _reserve_reply_sequences(self, path: str, msg_id: str, count: int) -> int:
         """Reserve unique msg_seq values across separate replies to one QQ message."""
